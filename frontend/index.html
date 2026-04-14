@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>김태림 마이너 갤러리</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">DC</div>
+        <div class="titles">
+          <h1>김태림 마이너 갤러리</h1>
+          <p>사건/뻘글/분탕 환영</p>
+        </div>
+      </div>
+      <button class="action">글쓰기</button>
+    </header>
+
+    <section class="hero">
+      <div class="hero-inner">
+        <div class="hero-title">오늘도 태림 관측소</div>
+        <div class="hero-sub">텔레그램으로 일상을 보내면 갤러리가 알아서 난리 낸다</div>
+      </div>
+    </section>
+
+    <section class="notice">
+      <div class="notice-badge">공지</div>
+      <div class="notice-text">갤 규정: 갈드컵 금지 (근데 해도됨) / 신상털기 금지 / 현실고증 환영</div>
+    </section>
+
+    <main class="list" id="postList">
+      <div class="empty">아직 글이 없습니다. 텔레그램으로 첫 일상을 보내보세요.</div>
+    </main>
+
+    <nav class="bottombar">
+      <button class="nav active">갤러리</button>
+      <button class="nav">핫글</button>
+      <button class="nav">검색</button>
+      <button class="nav">더보기</button>
+    </nav>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <div class="overlay-header">
+      <button class="back" id="backBtn">←</button>
+      <div class="overlay-title" id="overlayTitle">게시글</div>
+    </div>
+    <div class="overlay-body" id="overlayBody"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
