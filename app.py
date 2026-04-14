@@ -145,7 +145,9 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
 
     system_prompt = build_system_prompt()
 
-    full_prompt = f"""【사용자의 오늘 일기/메시지】
+    full_prompt = f"""{system_prompt}
+
+【사용자의 오늘 일기/메시지】
 {user_text}
 
 위의 글을 보고 갤러리 유저들이 실시간으로 싸우며 반응해줘."""
@@ -154,7 +156,6 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=full_prompt,
-            config={'system_instruction': system_prompt, 'response_mime_type': 'application/json'}
         )
         return response.text or ""
 
