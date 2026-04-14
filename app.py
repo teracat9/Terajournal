@@ -3,10 +3,13 @@ import json
 import logging
 import os
 import random
+import sqlite3
+import base64
+import json as json_lib
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Any, Set, List
+from typing import Dict, Any, Set, List, Optional
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -18,12 +21,13 @@ from google import genai
 
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "frontend"
+DB_PATH = BASE_DIR / "data.db"
 
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-05-20")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 AGG_WINDOW_MINUTES = int(os.getenv("AGG_WINDOW_MINUTES", "30"))
 
@@ -45,6 +49,81 @@ gallery_chronicle: List[Dict[str, str]] = []
 
 GODLIFE_KEYWORDS = ["코딩", "운동", "독서", "공부", "작업", "개발", "루틴", "산책", "수영", "헬스", "스트레칭"]
 LAZY_KEYWORDS = ["야식", "늦잠", "게임", "무기력", "눕", "멍", "침대", "넷플", "피곤"]
+
+
+def init_db():
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id TEXT PRIMARY KEY,
+            event_start TEXT,
+            event_end TEXT,
+            message_count INTEGER,
+            mood TEXT,
+            event_title TEXT,
+            data TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS chronicles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT,
+            content TEXT,
+            time TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def save_event_to_db(event: Dict[str, Any]):
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    data_json = json_lib.dumps(event)
+    c.execute("""
+        INSERT OR REPLACE INTO events (id, event_start, event_end, message_count, mood, event_title, data)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        event.get("event_id"),
+        event.get("event_start"),
+        event.get("event_end"),
+        event.get("message_count", 1),
+        event.get("mood", "NEUTRAL"),
+        event.get("event_title"),
+        data_json
+    ))
+    conn.commit()
+    conn.close()
+
+
+def save_chronicle_to_db(chronicle_type: str, content: str, time_iso: str):
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute("INSERT INTO chronicles (type, content, time) VALUES (?, ?, ?)", (chronicle_type, content, time_iso))
+    conn.commit()
+    conn.close()
+
+
+def load_all_from_db():
+    global saved_posts, user_chronicle, gallery_chronicle
+    
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    
+    c.execute("SELECT data FROM events ORDER BY event_start DESC LIMIT 100")
+    rows = c.fetchall()
+    saved_posts = [json_lib.loads(row[0]) for row in rows] if rows else []
+    
+    c.execute("SELECT type, content, time FROM chronicles WHERE type='user' ORDER BY id DESC LIMIT 50")
+    user_rows = c.fetchall()
+    user_chronicle = [{"content": r[1], "time": r[2]} for r in user_rows] if user_rows else []
+    
+    c.execute("SELECT type, content, time FROM chronicles WHERE type='gallery' ORDER BY id DESC LIMIT 50")
+    gallery_rows = c.fetchall()
+    gallery_chronicle = [{"content": r[1], "time": r[2]} for r in gallery_rows] if gallery_rows else []
+    
+    conn.close()
 
 
 def _now_iso() -> str:
@@ -81,7 +160,7 @@ def generate_anonymous_name() -> str:
     return f"ㅇㅇ({ip})"
 
 
-def build_system_prompt() -> str:
+def build_system_prompt(has_image: bool = False, image_description: str = "") -> str:
     user_summary = ""
     if user_chronicle:
         user_summary = "\n\n【사용자 연대기】\n"
@@ -93,6 +172,8 @@ def build_system_prompt() -> str:
         gallery_summary = "\n\n【갤러리 연대기】\n"
         for item in gallery_chronicle[-10:]:
             gallery_summary += f"- {item['content']}\n"
+
+    image_context = f"\n\n【사용자가 보낸 사진】\n{image_description}" if has_image else ""
 
     return f"""너는 유튜브 브이로그 라이브의 따뜻한 시청자들이다.
 매번 6-10명의 시청자가 채팅으로 응원과 공감을 남긴다.
@@ -114,8 +195,7 @@ def build_system_prompt() -> str:
 3. 갤러리 연대기와 사용자 연대기를 참고해서 맥락 유지
 4. 절대 마크다운 사용 금지
 5. 본문은 짧고 담백하게
-
-{user_summary}{gallery_summary}
+6. 사진이 있으면 사진 내용을 구체적으로 언급하며 반응{user_summary}{gallery_summary}{image_context}
 
 【응답 형식】
 {{
@@ -164,15 +244,27 @@ def _fallback_posts(message: str) -> Dict[str, Any]:
     }
 
 
-async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
+async def generate_gallery_posts(
+    user_text: str, 
+    image_data: Optional[bytes] = None,
+    image_description: str = ""
+) -> Dict[str, Any]:
     global user_chronicle, gallery_chronicle
 
     if not client:
         return _fallback_posts("GEMINI_API_KEY가 설정되지 않았습니다.")
 
-    system_prompt = build_system_prompt()
+    system_prompt = build_system_prompt(has_image=bool(image_data), image_description=image_description)
 
-    full_prompt = f"""{system_prompt}
+    if image_data:
+        full_prompt = f"""{system_prompt}
+
+【사용자의 오늘 일기/메시지】
+{user_text if user_text else "사진만 보냈습니다."}
+
+위의 내용을 보고 시청자들이 실시간으로 반응해줘."""
+    else:
+        full_prompt = f"""{system_prompt}
 
 【사용자의 오늘 일기/메시지】
 {user_text}
@@ -180,10 +272,19 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
 위의 글을 보고 갤러리 유저들이 실시간으로 싸우며 반응해줘."""
 
     def _call_model() -> str:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=full_prompt,
-        )
+        if image_data:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[
+                    {"text": full_prompt},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(image_data).decode()}}
+                ],
+            )
+        else:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=full_prompt,
+            )
         return response.text or ""
 
     raw = ""
@@ -198,25 +299,29 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
                 await asyncio.sleep(0.2 + attempt * 0.2)
                 continue
             return _fallback_posts("지금 AI가 잠깐 붐비는 중… 잠시 후 다시 시도해줘!")
+    
     try:
-        parsed = json.loads(raw)
+        parsed = json_lib.loads(raw)
         if isinstance(parsed, dict) and "posts" in parsed:
-            user_summary = parsed.get("user_summary", user_text[:50])
+            user_summary = parsed.get("user_summary", user_text[:50] if user_text else "사진 전송")
             gallery_summary = parsed.get("gallery_summary", str(parsed["posts"][0]["content"])[:50])
 
             user_chronicle.append({"content": user_summary, "time": _now_iso()})
             gallery_chronicle.append({"content": gallery_summary, "time": _now_iso()})
+            
+            save_chronicle_to_db("user", user_summary, _now_iso())
+            save_chronicle_to_db("gallery", gallery_summary, _now_iso())
 
             if len(user_chronicle) > 50:
                 user_chronicle = user_chronicle[-50:]
             if len(gallery_chronicle) > 50:
                 gallery_chronicle = gallery_chronicle[-50:]
 
-            mood = _classify_text(user_text)
+            mood = _classify_text(user_text) if user_text else "NEUTRAL"
             parsed["mood"] = mood
             parsed["event_title"] = _make_event_title(user_summary)
             return parsed
-    except json.JSONDecodeError:
+    except json_lib.JSONDecodeError:
         logger.exception("Gemini JSON parse failed")
 
     return {
@@ -228,7 +333,7 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
 def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
     if not saved_posts:
         event_id = str(uuid4())
-        return {
+        event = {
             "event_id": event_id,
             "event_start": now_iso,
             "event_end": now_iso,
@@ -237,6 +342,8 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
             "event_title": data.get("event_title") or _make_event_title(data.get("user_summary", "")),
             **data,
         }
+        save_event_to_db(event)
+        return event
 
     last = saved_posts[-1]
     try:
@@ -254,10 +361,11 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         last["message_count"] = int(last.get("message_count", 1)) + 1
         last["mood"] = _merge_mood(last.get("mood", "NEUTRAL"), data.get("mood", "NEUTRAL"))
         last["event_title"] = data.get("event_title") or last.get("event_title")
+        save_event_to_db(last)
         return last
 
     event_id = str(uuid4())
-    return {
+    event = {
         "event_id": event_id,
         "event_start": now_iso,
         "event_end": now_iso,
@@ -266,33 +374,50 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         "event_title": data.get("event_title") or _make_event_title(data.get("user_summary", "")),
         **data,
     }
+    save_event_to_db(event)
+    return event
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = ""
+    image_data = None
+    image_description = ""
+    
     if update.message:
         if update.message.text:
             text = update.message.text.strip()
         elif update.message.caption:
             text = update.message.caption.strip()
         elif update.message.photo:
-            text = "사용자가 사진을 보냈습니다."
+            photo = update.message.photo[-1]
+            try:
+                file = await context.bot.get_file(photo.file_id)
+                image_bytes = await file.download_as_bytearray()
+                image_data = bytes(image_bytes)
+                text = "사용자가 사진을 보냈습니다."
+            except Exception as e:
+                logger.error(f"Failed to download photo: {e}")
+                text = "사용자가 사진을 보냈습니다. (사진 다운로드 실패)"
 
-    if not text:
+    if not text and not image_data:
         return
 
-    data = await generate_gallery_posts(text)
+    data = await generate_gallery_posts(text, image_data, image_description)
     now_iso = _now_iso()
     event = _upsert_event(data, now_iso)
     payload = _build_payload(event)
     await broadcast(payload)
     if not saved_posts or saved_posts[-1].get("event_id") != event.get("event_id"):
-        saved_posts.append(event)
+        saved_posts.insert(0, event)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bot_app, bot_started
+    
+    init_db()
+    load_all_from_db()
+    
     if TELEGRAM_TOKEN and RENDER_URL:
         bot_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
         bot_app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
@@ -368,6 +493,11 @@ async def get_chronicles() -> Dict[str, List[Dict[str, str]]]:
 @app.post("/clear-posts")
 async def clear_posts() -> Dict[str, str]:
     global saved_posts
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute("DELETE FROM events")
+    conn.commit()
+    conn.close()
     saved_posts = []
     return {"status": "cleared"}
 
@@ -375,6 +505,11 @@ async def clear_posts() -> Dict[str, str]:
 @app.post("/clear-chronicles")
 async def clear_chronicles() -> Dict[str, str]:
     global user_chronicle, gallery_chronicle
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute("DELETE FROM chronicles")
+    conn.commit()
+    conn.close()
     user_chronicle = []
     gallery_chronicle = []
     return {"status": "cleared"}
