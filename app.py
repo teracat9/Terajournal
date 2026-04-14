@@ -288,17 +288,21 @@ async def generate_gallery_posts(
         return response.text or ""
 
     raw = ""
-    retries = 2
-    for attempt in range(retries + 1):
+    max_retries = 10
+    base_delay = 1
+    
+    for attempt in range(max_retries):
         try:
             raw = await asyncio.to_thread(_call_model)
             break
         except Exception as exc:
-            logger.warning("Gemini call failed (%s/%s): %s", attempt + 1, retries + 1, exc)
-            if attempt < retries:
-                await asyncio.sleep(0.2 + attempt * 0.2)
+            logger.warning("Gemini call failed (%s/%s): %s", attempt + 1, max_retries, exc)
+            if attempt < max_retries - 1:
+                delay = min(base_delay * (2 ** attempt), 8)
+                logger.info(f"Retrying in {delay}s...")
+                await asyncio.sleep(delay)
                 continue
-            return _fallback_posts("지금 AI가 잠깐 붐비는 중… 잠시 후 다시 시도해줘!")
+            return _fallback_posts(f"AI가 계속 실패하고 있어요... 나중에 다시 시도해주세요. ({attempt + 1}회 시도)")
     
     try:
         parsed = json_lib.loads(raw)
