@@ -43,6 +43,9 @@ saved_posts: List[Dict[str, Any]] = []
 user_chronicle: List[Dict[str, str]] = []
 gallery_chronicle: List[Dict[str, str]] = []
 
+GODLIFE_KEYWORDS = ["코딩", "운동", "독서", "공부", "작업", "개발", "루틴", "산책", "수영", "헬스", "스트레칭"]
+LAZY_KEYWORDS = ["야식", "늦잠", "게임", "무기력", "눕", "멍", "침대", "넷플", "피곤"]
+
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
@@ -50,6 +53,28 @@ def _now_iso() -> str:
 def _parse_iso(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", ""))
 
+def _classify_text(text: str) -> str:
+    content = (text or "").lower()
+    is_god = any(keyword in content for keyword in GODLIFE_KEYWORDS)
+    is_lazy = any(keyword in content for keyword in LAZY_KEYWORDS)
+    if is_god and not is_lazy:
+        return "GODLIFE"
+    if is_lazy and not is_god:
+        return "LAZY"
+    return "NEUTRAL"
+
+def _merge_mood(current: str, incoming: str) -> str:
+    if "GODLIFE" in (current, incoming):
+        return "GODLIFE"
+    if "LAZY" in (current, incoming):
+        return "LAZY"
+    return "NEUTRAL"
+
+def _make_event_title(summary: str) -> str:
+    base = (summary or "").strip()
+    if not base:
+        return "브이로그 세션"
+    return base[:24]
 
 def generate_anonymous_name() -> str:
     ip = f"{random.randint(1,999)}.{random.randint(0,99)}"
@@ -194,6 +219,9 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
             if len(gallery_chronicle) > 50:
                 gallery_chronicle = gallery_chronicle[-50:]
 
+            mood = _classify_text(user_text)
+            parsed["mood"] = mood
+            parsed["event_title"] = _make_event_title(user_summary)
             return parsed
     except json.JSONDecodeError:
         logger.exception("Gemini JSON parse failed")
@@ -212,6 +240,8 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
             "event_start": now_iso,
             "event_end": now_iso,
             "message_count": 1,
+            "mood": data.get("mood", "NEUTRAL"),
+            "event_title": data.get("event_title") or _make_event_title(data.get("user_summary", "")),
             **data,
         }
 
@@ -229,6 +259,8 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         last["gallery_summary"] = data.get("gallery_summary", last.get("gallery_summary", ""))
         last["event_end"] = now_iso
         last["message_count"] = int(last.get("message_count", 1)) + 1
+        last["mood"] = _merge_mood(last.get("mood", "NEUTRAL"), data.get("mood", "NEUTRAL"))
+        last["event_title"] = data.get("event_title") or last.get("event_title")
         return last
 
     event_id = str(uuid4())
@@ -237,6 +269,8 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         "event_start": now_iso,
         "event_end": now_iso,
         "message_count": 1,
+        "mood": data.get("mood", "NEUTRAL"),
+        "event_title": data.get("event_title") or _make_event_title(data.get("user_summary", "")),
         **data,
     }
 

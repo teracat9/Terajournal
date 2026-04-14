@@ -24,6 +24,16 @@ function formatTime() {
   return now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 }
 
+function formatRange(startIso, endIso) {
+  if (!startIso || !endIso) return formatTime();
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return formatTime();
+  const startText = start.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  const endText = end.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  return `${startText}–${endText}`;
+}
+
 function formatDate() {
   const now = new Date();
   return now.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' });
@@ -162,7 +172,7 @@ function renderList() {
       <div class="card-title">${post.title}</div>
       <div class="card-meta">
         <span>${post.author}</span>
-        <span>${post.time}</span>
+        <span>${post.timeRange}</span>
       </div>
       <div class="card-chips">
         <span class="chip ${chipClass}">${moodLabel}</span>
@@ -255,16 +265,17 @@ function addPosts(incoming) {
   if (!incoming || !Array.isArray(incoming.posts)) return;
 
   const combinedText = incoming.posts.map((p) => p.content || '').join(' ');
-  const mood = classifyPost(combinedText);
+  const mood = incoming.mood || classifyPost(combinedText);
   const tags = extractTags(combinedText);
   const eventId = incoming.event_id || crypto.randomUUID();
   const existingIndex = posts.findIndex((p) => p.id === eventId);
   const previousCount = existingIndex === -1 ? 0 : (posts[existingIndex].messageCount || 0);
 
-  const title = incoming.posts[0]?.title || '무제';
+  const title = incoming.event_title || incoming.posts[0]?.title || '무제';
   const author = incoming.posts[0]?.author || '익명';
   const preview = combinedText.slice(0, 90) + (combinedText.length > 90 ? '...' : '');
   const messageCount = incoming.message_count || incoming.posts.length;
+  const timeRange = formatRange(incoming.event_start, incoming.event_end);
 
   const event = {
     id: eventId,
@@ -274,6 +285,7 @@ function addPosts(incoming) {
     comments: incoming.posts.flatMap((p) => p.comments || []),
     preview,
     time: formatTime(),
+    timeRange,
     isNew: existingIndex === -1,
     mood,
     tags,
