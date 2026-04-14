@@ -3,44 +3,89 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>김태림 마이너 갤러리</title>
+  <title>김태림 갓생 브이로그 대시보드</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <div class="effect-layer" id="effectLayer"></div>
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <div class="logo">DC</div>
+        <div class="logo-dot"></div>
         <div class="titles">
-          <h1>김태림 마이너 갤러리</h1>
-          <p>사건/뻘글/분탕 환영</p>
+          <h1>김태림 갓생 브이로그</h1>
+          <p>Lifecast · 실시간 1인 방송국</p>
         </div>
       </div>
-      <button class="action">글쓰기</button>
+      <div class="top-actions">
+        <div class="live-pill">LIVE</div>
+        <button class="action">로그 보내기</button>
+      </div>
     </header>
 
     <section class="hero">
       <div class="hero-inner">
-        <div class="hero-title">오늘도 태림 관측소</div>
-        <div class="hero-sub">텔레그램으로 일상을 보내면 갤러리가 알아서 난리 낸다</div>
+        <div class="hero-title">오늘의 브이로그: 산뜻한 갓생 라디오</div>
+        <div class="hero-sub">텔레그램 로그가 도착하면 타임라인에 부드럽게 기록되고, 응원 채팅이 함께 흐른다.</div>
+        <div class="hero-meta">오늘 · 일상/작업/운동 기록</div>
       </div>
     </section>
 
-    <section class="notice">
-      <div class="notice-badge">공지</div>
-      <div class="notice-text">갤 규정: 갈드컵 금지 (근데 해도됨) / 신상털기 금지 / 현실고증 환영</div>
-    </section>
+    <main class="dashboard">
+      <aside class="panel stats">
+        <div class="panel-header">
+          <span>Stats</span>
+          <span class="panel-sub">오늘의 성장</span>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-card">
+            <div class="stat-label">구독자(EXP)</div>
+            <div class="stat-value" id="statExp">0</div>
+            <div class="stat-delta" id="statExpDelta">+0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">코인</div>
+            <div class="stat-value" id="statCoins">0</div>
+            <div class="stat-delta" id="statCoinsDelta">+0</div>
+          </div>
+        </div>
+        <div class="combo-card">
+          <div class="combo-header">
+            <span>콤보 게이지</span>
+            <span class="combo-count" id="statCombo">0일</span>
+          </div>
+          <div class="combo-bar">
+            <div class="combo-fill" id="comboFill"></div>
+          </div>
+          <div class="combo-tip">오늘도 작은 루틴을 지키면 잔잔한 버프가 켜집니다.</div>
+        </div>
+        <div class="mini-cards">
+          <div class="mini-card">🥤 수분 1L</div>
+          <div class="mini-card">📚 집중 50m</div>
+          <div class="mini-card">🚶 산책 20m</div>
+        </div>
+      </aside>
 
-    <main class="list" id="postList">
-      <div class="empty">아직 글이 없습니다. 텔레그램으로 첫 일상을 보내보세요.</div>
+      <section class="panel timeline">
+        <div class="panel-header">
+          <span>Timeline</span>
+          <span class="panel-sub">방금 올라온 로그</span>
+        </div>
+        <div class="list" id="postList">
+          <div class="empty">아직 글이 없습니다. 텔레그램으로 첫 일상을 보내보세요.</div>
+        </div>
+      </section>
+
+      <aside class="panel chat">
+        <div class="panel-header">
+          <span>Live Chat</span>
+          <span class="panel-sub">응원 스트림</span>
+        </div>
+        <div class="chat-list" id="chatList">
+          <div class="chat-empty">첫 로그가 올라오면 채팅이 흐릅니다.</div>
+        </div>
+      </aside>
     </main>
-
-    <nav class="bottombar">
-      <button class="nav active">갤러리</button>
-      <button class="nav">핫글</button>
-      <button class="nav">검색</button>
-      <button class="nav">더보기</button>
-    </nav>
   </div>
 
   <div class="overlay" id="overlay">
