@@ -2,10 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import random
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Set, List, Optional
+from typing import Dict, Any, Set, List
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
@@ -24,47 +25,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 
-SYSTEM_PROMPT = """너는 대한민국의 익명 갤러리 디시인사이드의 유저들이다.
-여러 명의 갤러리가 한 공간에서 사용자의 일상을 보고 评论하고 있다.
-
-【갤러리 유저 목록】 (매번 모두 등장)
-- 갈드컵: 40대 중반, 시니컬하고 pessimistic, 현실인생 조언자
-- 뻘글러: 20대 초반, 논리없는 뻘글 전문, ㅋㅋㅋ 많음
-- 꼬꼬마: 10대 후반, 학교 이야기, 밈 이해 못함
-- 철없는아저씨: 30대, 트렌드追赶자, 모든 것에"K-POP"联系起来
-- 냥냥이: 20대 중반, 고양이 같은 성격, 감정 반응 많음
-- 시크한갤러리: 20대 후반, 쿨한 척하지만 속는 건性强
-
-【규칙】
-1. 반드시 JSON으로만 응답
-2. 매번 위의 6명 모두의 댓글을 생성
-3. 갤러리 유저들은 이전 대화를 기억하고 있음 (맥락 있음)
-4. 현실적이면서도 웃긴 反应
-5. 절대 마크다운 사용 금지
-
-【응답 형식】
-{
-  "posts": [
-    {
-      "title": "게시글 제목",
-      "author": "작성자 닉네임",
-      "content": "본문 내용",
-      "comments": [
-        {"author": "갈드컵", "content": "댓글1"},
-        {"author": "뻘글러", "content": "댓글2"},
-        {"author": "꼬꼬마", "content": "댓글3"},
-        {"author": "철없는아저씨", "content": "댓글4"},
-        {"author": "냥냥이", "content": "댓글5"},
-        {"author": "시크한갤러리", "content": "댓글6"}
-      ]
-    }
-  ],
-  "conversation_history": [
-    {"role": "user", "content": "이전 사용자 메시지"},
-    {"role": "assistant", "content": "이전 갤러리 반응 요약"}
-  ]
-}"""
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("taerim-gal")
 
@@ -74,12 +34,82 @@ connections: Set[WebSocket] = set()
 connections_lock = asyncio.Lock()
 
 bot_app = None
-conversation_history: List[Dict[str, str]] = []
 saved_posts: List[Dict[str, Any]] = []
+user_chronicle: List[Dict[str, str]] = []
+gallery_chronicle: List[Dict[str, str]] = []
 
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
+
+
+def generate_anonymous_name() -> str:
+    prefixes = ["ㅇㅇ", "ㅎㅎ", "익", "ㅂㅂ", "ㄱㄱ", "ㅈㅈ", "ㅋㅋ", "ㅌㅌ", "ㅍㅍ", "ㄴㄴ", "ㅅㅅ", "ㅇ", "ㅎ", "ㅋ", "ㅂ", "ㅁㅁ", "ㄹㄹ", "ㅊㅊ"]
+    suffix = str(random.randint(10, 9999)).zfill(random.choice([2, 3, 4]))
+    return f"{random.choice(prefixes)}({suffix})"
+
+
+def build_system_prompt() -> str:
+    user_summary = ""
+    if user_chronicle:
+        user_summary = "\n\n【사용자 연대기】\n"
+        for item in user_chronicle[-10:]:
+            user_summary += f"- {item['content']}\n"
+
+    gallery_summary = ""
+    if gallery_chronicle:
+        gallery_summary = "\n\n【갤러리 연대기】\n"
+        for item in gallery_chronicle[-10:]:
+            gallery_summary += f"- {item['content']}\n"
+
+    return f"""너는 대한민국 익명 갤러리 디시인사이드의 유저들이다.
+매번 8-12명의 익명 갤러러들이 댓글을 달며 실시간으로 싸우고 상호작용한다.
+
+【익명 닉네임 생성 규칙】
+- 매번 랜덤하게 생성 (예: ㅇㅇ(1523), ㅎㅎ(998), 익(42), ㄱㄱ(7721))
+- 닉네임 예시: ㅇㅇ(1523), ㅎㅎ(998), 익(42), ㄱㄱ(7721), ㅂㅂ(334), ㅈㅈ(5589), ㅋㅋ(221), ㅌㅌ(887)
+
+【갤러리 유저 성격 (매번 랜덤하게 섞어서 배정)】
+- 현실까: 현실적인 반박, 인생 경험으로 조언
+- 뻘글러: 논리 없이 웃긴 말, ㅋㅋㅋ 폭발
+- 꼬꼬마: 순수한 반응, 밈 잘못 이해
+- 트렌드추격자: 최신 밈, 유행어 남발
+- 감성러: 감정적 반응, ㅠㅠ 많음
+- 시크댓글러: 쿨한 척, 속는 건 마찬가지
+- 고인: 옛날 밈, "요즘은 이게 뜨거움" 스타일
+- 냥냥이: 고양이 사진 언급, 귀여움 반응
+
+【핵심 규칙】
+1. JSON으로만 응답
+2. 각 댓글은 다른 유저가 서로의 댓글에 반응하며 싸움
+3. 첫 댓글 → 다른 유저가 반박 → 첫 유저가 역反박 → 또 다른 유저 개입... (연속 댓글战争中)
+4. 갤러리 연대기와 사용자 연대기를 참고해서 맥락 유지
+5. 절대 마크다운 사용 금지
+6. 본문은 짧고 임팩트 있게
+
+{user_summary}{gallery_summary}
+
+【응답 형식】
+{{
+  "posts": [
+    {{
+      "title": "짧고 임팩트 있는 제목",
+      "author": "익명 닉네임",
+      "content": "짧고 센싶은 본문 (2-3줄)",
+      "comments": [
+        {{"author": "ㅇㅇ(1523)", "content": "첫 반응"}},
+        {{"author": "ㅎㅎ(998)", "content": "첫 유저 반박/비웃음"}},
+        {{"author": "ㅇㅇ(1523)", "content": "역反박"}},
+        {{"author": "익(42)", "content": "새 유저 개입"}},
+        {{"author": "ㅎㅎ(998)", "content": "꼬꼬마 놀리기 시작"}},
+        {{"author": "ㄱㄱ(7721)", "content": "트렌드유행"}},
+        {{"author": "ㅎㅎ(998)", "content": "마지막 한마디"}}
+      ]
+    }}
+  ],
+  "user_summary": "이번 사용자 메시지를 한 줄 요약 (AI가 기억용)",
+  "gallery_summary": "이번 갤러리 반응을 한 줄 요약 (AI가 기억용)"
+}}"""
 
 
 async def broadcast(payload: Dict[str, Any]) -> None:
@@ -103,39 +133,26 @@ def _build_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
-    global conversation_history
-    
+    global user_chronicle, gallery_chronicle
+
     if not GEMINI_API_KEY:
         return {
-            "posts": [
-                {
-                    "title": "API 키 없음",
-                    "author": "시스템",
-                    "content": "GEMINI_API_KEY가 설정되지 않았습니다.",
-                    "comments": [],
-                }
-            ]
+            "posts": [{"title": "API 키 없음", "author": "시스템", "content": "GEMINI_API_KEY가 설정되지 않았습니다.", "comments": []}],
+            "user_summary": "",
+            "gallery_summary": ""
         }
 
-    history_text = ""
-    if conversation_history:
-        history_text = "\n【이전 대화 맥락】\n"
-        for msg in conversation_history[-6:]:
-            history_text += f"- {msg['content'][:100]}\n"
+    system_prompt = build_system_prompt()
 
-    full_prompt = f"""【사용자의 최신 메시지】
-{user_text}
-{history_text}
-
-위의 사용자의 이야기를 보고 갤러리 유저들이 어떻게 반응하는지 작성해줘.""" if history_text else f"""【사용자의 메시지】
+    full_prompt = f"""【사용자의 오늘 일기/메시지】
 {user_text}
 
-위의 사용자의 이야기를 보고 갤러리 유저들이 어떻게 반응하는지 작성해줘."""
+위의 글을 보고 갤러리 유저들이 실시간으로 싸우며 반응해줘."""
 
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel(
         model_name=GEMINI_MODEL,
-        system_instruction=SYSTEM_PROMPT,
+        system_instruction=system_prompt,
     )
 
     def _call_model() -> str:
@@ -149,23 +166,25 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, dict) and "posts" in parsed:
-            conversation_history.append({"role": "user", "content": user_text})
-            conversation_history.append({"role": "assistant", "content": str(parsed["posts"][0]["content"])[:100]})
-            if len(conversation_history) > 20:
-                conversation_history = conversation_history[-20:]
+            user_summary = parsed.get("user_summary", user_text[:50])
+            gallery_summary = parsed.get("gallery_summary", str(parsed["posts"][0]["content"])[:50])
+
+            user_chronicle.append({"content": user_summary, "time": _now_iso()})
+            gallery_chronicle.append({"content": gallery_summary, "time": _now_iso()})
+
+            if len(user_chronicle) > 50:
+                user_chronicle = user_chronicle[-50:]
+            if len(gallery_chronicle) > 50:
+                gallery_chronicle = gallery_chronicle[-50:]
+
             return parsed
     except json.JSONDecodeError:
         logger.exception("Gemini JSON parse failed")
 
     return {
-        "posts": [
-            {
-                "title": "파싱 실패",
-                "author": "시스템",
-                "content": raw[:500] or "Gemini 응답이 비어 있습니다.",
-                "comments": [],
-            }
-        ]
+        "posts": [{"title": "파싱 실패", "author": "시스템", "content": raw[:500], "comments": []}],
+        "user_summary": "",
+        "gallery_summary": ""
     }
 
 
@@ -232,7 +251,6 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     async with connections_lock:
         connections.add(ws)
-
     try:
         while True:
             await ws.receive_text()
@@ -246,27 +264,28 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/history")
-async def get_history() -> List[Dict[str, str]]:
-    return conversation_history
-
-
 @app.get("/posts")
 async def get_posts() -> List[Dict[str, Any]]:
     return saved_posts
 
 
-@app.post("/clear-history")
-async def clear_history() -> Dict[str, str]:
-    global conversation_history
-    conversation_history = []
-    return {"status": "cleared"}
+@app.get("/chronicles")
+async def get_chronicles() -> Dict[str, List[Dict[str, str]]]:
+    return {"user": user_chronicle, "gallery": gallery_chronicle}
 
 
 @app.post("/clear-posts")
 async def clear_posts() -> Dict[str, str]:
     global saved_posts
     saved_posts = []
+    return {"status": "cleared"}
+
+
+@app.post("/clear-chronicles")
+async def clear_chronicles() -> Dict[str, str]:
+    global user_chronicle, gallery_chronicle
+    user_chronicle = []
+    gallery_chronicle = []
     return {"status": "cleared"}
 
 
