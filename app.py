@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Set
@@ -129,6 +130,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await broadcast(payload)
 
 
+@asynccontextmanager
 async def lifespan(app: FastAPI):
     global bot_app
     if TELEGRAM_TOKEN and RENDER_URL:
@@ -151,7 +153,7 @@ async def lifespan(app: FastAPI):
         await bot_app.shutdown()
 
 
-app.router.lifespan_context = lifespan
+app = FastAPI(lifespan=lifespan)
 
 
 @app.post("/webhook/{token}")
