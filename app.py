@@ -31,7 +31,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 AGG_WINDOW_MINUTES = int(os.getenv("AGG_WINDOW_MINUTES", "30"))
 
-client = genai.Client(api_key=GEMINI_API_KEY, http_options={'api_version': 'v1'}) if GEMINI_API_KEY else None
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("taerim-gal")
