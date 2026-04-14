@@ -116,6 +116,20 @@ function addPosts(incoming) {
   renderList();
 }
 
+async function loadSavedPosts() {
+  try {
+    const res = await fetch('/posts');
+    if (res.ok) {
+      const savedPosts = await res.json();
+      savedPosts.reverse().forEach((data) => {
+        addPosts(data);
+      });
+    }
+  } catch (err) {
+    console.error('Failed to load saved posts', err);
+  }
+}
+
 function connect() {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${protocol}://${location.host}/ws`);
@@ -140,4 +154,5 @@ function connect() {
   };
 }
 
+loadSavedPosts();
 connect();
