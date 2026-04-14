@@ -404,6 +404,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     data = await generate_gallery_posts(text, image_data, image_description)
     now_iso = _now_iso()
+
+    # AI가 시스템(에러) 응답이면 화면에만 알림만 띄우고 기록 저장 안 함
+    if data.get("posts") and data["posts"][0].get("author") == "시스템":
+        dummy_event = {
+            "event_id": "temp-" + str(uuid4()),
+            "event_title": "알림",
+            **data
+        }
+        payload = _build_payload(dummy_event)
+        await broadcast(payload)
+        return
+
+    # 정상 응답만 저장
     event = _upsert_event(data, now_iso)
     payload = _build_payload(event)
     await broadcast(payload)
