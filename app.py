@@ -36,6 +36,7 @@ connections: Set[WebSocket] = set()
 connections_lock = asyncio.Lock()
 
 bot_app = None
+bot_started = False
 saved_posts: List[Dict[str, Any]] = []
 user_chronicle: List[Dict[str, str]] = []
 gallery_chronicle: List[Dict[str, str]] = []
@@ -132,16 +133,19 @@ def _build_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "data": data,
     }
 
+def _fallback_posts(message: str) -> Dict[str, Any]:
+    return {
+        "posts": [{"title": "AI 대기중", "author": "시스템", "content": message, "comments": []}],
+        "user_summary": "",
+        "gallery_summary": ""
+    }
+
 
 async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
     global user_chronicle, gallery_chronicle
 
     if not client:
-        return {
-            "posts": [{"title": "API 키 없음", "author": "시스템", "content": "GEMINI_API_KEY가 설정되지 않았습니다.", "comments": []}],
-            "user_summary": "",
-            "gallery_summary": ""
-        }
+        return _fallback_posts("GEMINI_API_KEY가 설정되지 않았습니다.")
 
     system_prompt = build_system_prompt()
 
@@ -159,7 +163,18 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
         )
         return response.text or ""
 
-    raw = await asyncio.to_thread(_call_model)
+    raw = ""
+    retries = 2
+    for attempt in range(retries + 1):
+        try:
+            raw = await asyncio.to_thread(_call_model)
+            break
+        except Exception as exc:
+            logger.warning("Gemini call failed (%s/%s): %s", attempt + 1, retries + 1, exc)
+            if attempt < retries:
+                await asyncio.sleep(0.2 + attempt * 0.2)
+                continue
+            return _fallback_posts("지금 AI가 잠깐 붐비는 중… 잠시 후 다시 시도해줘!")
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, dict) and "posts" in parsed:
@@ -206,7 +221,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global bot_app
+    global bot_app, bot_started
     if TELEGRAM_TOKEN and RENDER_URL:
         bot_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
         bot_app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
@@ -214,6 +229,7 @@ async def lifespan(app: FastAPI):
         webhook_url = f"{RENDER_URL}/webhook/{TELEGRAM_TOKEN}"
         await bot_app.bot.set_webhook(webhook_url)
         logger.info(f"Webhook set to {webhook_url}")
+        bot_started = False
     elif TELEGRAM_TOKEN:
         logger.warning("RENDER_EXTERNAL_URL not set. Using polling mode.")
         bot_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -221,9 +237,11 @@ async def lifespan(app: FastAPI):
         await bot_app.initialize()
         await bot_app.start()
         await bot_app.updater.start_polling()
+        bot_started = True
     yield
     if bot_app:
-        await bot_app.stop()
+        if bot_started:
+            await bot_app.stop()
         await bot_app.shutdown()
 
 
@@ -259,6 +277,11 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 @app.get("/health")
 async def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/favicon.ico")
+async def favicon() -> Response:
+    return Response(status_code=204)
 
 
 @app.get("/posts")
