@@ -75,6 +75,7 @@ connections_lock = asyncio.Lock()
 
 bot_app = None
 conversation_history: List[Dict[str, str]] = []
+saved_posts: List[Dict[str, Any]] = []
 
 
 def _now_iso() -> str:
@@ -170,9 +171,7 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = ""
-    chat_id = None
     if update.message:
-        chat_id = update.message.chat_id
         if update.message.text:
             text = update.message.text.strip()
         elif update.message.caption:
@@ -186,19 +185,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     data = await generate_gallery_posts(text)
     payload = _build_payload(data)
     await broadcast(payload)
-
-    if chat_id and update.message:
-        posts = data.get("posts", [])
-        if posts:
-            post = posts[0]
-            response_text = f"📋 {post['title']}\n\n✍️ {post['author']}: {post['content']}\n\n"
-            for comment in post.get("comments", []):
-                response_text += f"💬 {comment['author']}: {comment['content']}\n"
-            
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=response_text[:4096])
-            except Exception as e:
-                logger.error(f"Failed to send message: {e}")
+    saved_posts.append(data)
 
 
 @asynccontextmanager
@@ -264,10 +251,22 @@ async def get_history() -> List[Dict[str, str]]:
     return conversation_history
 
 
+@app.get("/posts")
+async def get_posts() -> List[Dict[str, Any]]:
+    return saved_posts
+
+
 @app.post("/clear-history")
 async def clear_history() -> Dict[str, str]:
     global conversation_history
     conversation_history = []
+    return {"status": "cleared"}
+
+
+@app.post("/clear-posts")
+async def clear_posts() -> Dict[str, str]:
+    global saved_posts
+    saved_posts = []
     return {"status": "cleared"}
 
 
