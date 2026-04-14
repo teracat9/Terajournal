@@ -27,7 +27,7 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-05-20")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 AGG_WINDOW_MINUTES = int(os.getenv("AGG_WINDOW_MINUTES", "30"))
 
