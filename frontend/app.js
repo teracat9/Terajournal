@@ -4,21 +4,19 @@ const overlay = document.getElementById('overlay');
 const overlayTitle = document.getElementById('overlayTitle');
 const overlayBody = document.getElementById('overlayBody');
 const backBtn = document.getElementById('backBtn');
-const statExp = document.getElementById('statExp');
-const statCoins = document.getElementById('statCoins');
-const statCombo = document.getElementById('statCombo');
-const statExpDelta = document.getElementById('statExpDelta');
-const statCoinsDelta = document.getElementById('statCoinsDelta');
-const comboFill = document.getElementById('comboFill');
+const viewCount = document.getElementById('viewCount');
+const likeCount = document.getElementById('likeCount');
+const dislikeCount = document.getElementById('dislikeCount');
+const commentCount = document.getElementById('commentCount');
+const subCount = document.getElementById('subCount');
+const moneyCount = document.getElementById('moneyCount');
+const liveTitle = document.getElementById('liveTitle');
+const liveMeta = document.getElementById('liveMeta');
+const clipsList = document.getElementById('clipsList');
 const effectLayer = document.getElementById('effectLayer');
 
 const posts = [];
 const chatFeed = [];
-const summaryState = {
-  title: '오늘의 브이로그 요약',
-  lines: [],
-};
-
 function formatTime() {
   const now = new Date();
   return now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
@@ -37,6 +35,10 @@ function formatRange(startIso, endIso) {
 function formatDate() {
   const now = new Date();
   return now.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' });
+}
+
+function formatDayLabel(date) {
+  return date.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
 }
 
 const GODLIFE_KEYWORDS = ['코딩', '운동', '독서', '공부', '작업', '개발', '루틴', '산책', '수영', '헬스', '스트레칭'];
@@ -86,22 +88,37 @@ function getTotalMessages() {
   return posts.reduce((sum, p) => sum + (p.messageCount || 0), 0);
 }
 
-function updateStats(newPostsCount, newMessageCount) {
+function updateStats() {
   const totalMessages = getTotalMessages();
-  const expValue = totalMessages * 30;
-  const coinValue = totalMessages * 8;
-  const comboValue = Math.min(posts.filter((p) => p.mood === 'GODLIFE').length, 7);
+  const godlifeEvents = posts.filter((p) => p.mood === 'GODLIFE').length;
+  const views = totalMessages * 37 + godlifeEvents * 120;
+  const likes = Math.max(0, Math.floor(views * 0.08));
+  const dislikes = Math.max(0, Math.floor(views * 0.01));
+  const comments = Math.max(0, chatFeed.length);
 
-  if (statExp) statExp.textContent = expValue.toLocaleString();
-  if (statCoins) statCoins.textContent = coinValue.toLocaleString();
-  if (statCombo) statCombo.textContent = `${comboValue}일`;
+  let subs = Math.floor(totalMessages / 4);
+  let money = totalMessages * 500 + godlifeEvents * 1500;
 
-  if (statExpDelta) statExpDelta.textContent = `+${(newMessageCount * 30).toLocaleString()}`;
-  if (statCoinsDelta) statCoinsDelta.textContent = `+${(newMessageCount * 8).toLocaleString()}`;
+  const viralEvents = posts.filter((p) => p.mood === 'GODLIFE' && p.messageCount >= 5);
+  if (viralEvents.length > 0) {
+    subs += viralEvents.length * 18;
+    money += viralEvents.length * 20000;
+  }
 
-  if (comboFill) {
-    const percent = Math.min(100, comboValue * 14);
-    comboFill.style.width = `${percent}%`;
+  if (viewCount) viewCount.textContent = views.toLocaleString();
+  if (likeCount) likeCount.textContent = likes.toLocaleString();
+  if (dislikeCount) dislikeCount.textContent = dislikes.toLocaleString();
+  if (commentCount) commentCount.textContent = comments.toLocaleString();
+  if (subCount) subCount.textContent = subs.toLocaleString();
+  if (moneyCount) moneyCount.textContent = `₩${money.toLocaleString()}`;
+
+  if (liveMeta) {
+    liveMeta.textContent = `업로드 ${totalMessages}개 · 시청 ${views.toLocaleString()}회`;
+  }
+
+  if (liveTitle) {
+    const latest = posts[0];
+    liveTitle.textContent = latest ? `${latest.dayLabel} 라이브 다시보기` : '산뜻한 브이로그 데이 로그';
   }
 }
 
@@ -145,19 +162,18 @@ function renderList() {
     return;
   }
 
-  if (summaryState.lines.length > 0) {
-    const summaryCard = document.createElement('div');
-    summaryCard.className = 'summary-card';
-    summaryCard.innerHTML = `
-      <div class="summary-title">${summaryState.title} · ${formatDate()}</div>
-      <div class="summary-lines">
-        ${summaryState.lines.map((line) => `<div>${line}</div>`).join('')}
-      </div>
-    `;
-    postList.appendChild(summaryCard);
-  }
-
+  let lastDayKey = '';
   posts.forEach((post) => {
+    if (post.dayKey && post.dayKey !== lastDayKey) {
+      lastDayKey = post.dayKey;
+      const dayRow = document.createElement('div');
+      dayRow.className = 'card';
+      dayRow.innerHTML = `
+        <div class="card-title">${post.dayLabel} 라이브 다시보기</div>
+        <div class="card-content">하루 기록이 하나의 라이브로 남습니다.</div>
+      `;
+      postList.appendChild(dayRow);
+    }
     const card = document.createElement('div');
     card.className = 'card';
     if (post.isNew) {
@@ -177,6 +193,7 @@ function renderList() {
       <div class="card-chips">
         <span class="chip ${chipClass}">${moodLabel}</span>
         <span class="chip">세션 ${post.messageCount}개</span>
+        ${post.isClip ? '<span class="chip godlife">레전드 클립</span>' : ''}
         ${chipTags}
       </div>
       <div class="card-content">${post.preview}</div>
@@ -276,6 +293,10 @@ function addPosts(incoming) {
   const preview = combinedText.slice(0, 90) + (combinedText.length > 90 ? '...' : '');
   const messageCount = incoming.message_count || incoming.posts.length;
   const timeRange = formatRange(incoming.event_start, incoming.event_end);
+  const eventStart = incoming.event_start ? new Date(incoming.event_start) : new Date();
+  const dayKey = eventStart.toISOString().slice(0, 10);
+  const dayLabel = formatDayLabel(eventStart);
+  const isClip = mood === 'GODLIFE' && messageCount >= 4;
 
   const event = {
     id: eventId,
@@ -291,6 +312,9 @@ function addPosts(incoming) {
     tags,
     items: incoming.posts,
     messageCount,
+    dayKey,
+    dayLabel,
+    isClip,
   };
 
   if (existingIndex === -1) {
@@ -299,31 +323,33 @@ function addPosts(incoming) {
     posts[existingIndex] = event;
   }
 
-  updateSummary();
   rebuildChatFeed();
   renderList();
   renderChat();
-  const deltaMessages = Math.max(0, messageCount - previousCount);
-  updateStats(1, deltaMessages);
+  updateStats();
+  updateClips();
   const intensity = mood === 'GODLIFE' ? 2 : mood === 'LAZY' ? 1 : 1;
   const jackpot = mood === 'GODLIFE' && Math.random() < 0.1;
   triggerSoftEffects(intensity, jackpot);
 }
 
-function updateSummary() {
-  const godlifeTotal = posts.filter((p) => p.mood === 'GODLIFE').length;
-  const lazyTotal = posts.filter((p) => p.mood === 'LAZY').length;
-  const neutralTotal = posts.filter((p) => p.mood === 'NEUTRAL').length;
-
-  summaryState.title = godlifeTotal >= lazyTotal
-    ? '오늘의 작은 승리 기록'
-    : '오늘의 브이로그 점검';
-
-  summaryState.lines = [
-    `갓생 로그 ${godlifeTotal}개 · 나태 로그 ${lazyTotal}개 · 일상 ${neutralTotal}개`,
-    godlifeTotal > 0 ? '루틴이 이어지고 있어요. 내일도 가볍게 한 걸음.' : '쉬어가도 괜찮아요. 작은 루틴부터 다시 켜봅시다.',
-    `업로드 ${getTotalMessages()}개가 타임라인에 기록됨`,
-  ];
+function updateClips() {
+  if (!clipsList) return;
+  clipsList.innerHTML = '';
+  const clips = posts.filter((p) => p.isClip).slice(0, 6);
+  if (clips.length === 0) {
+    clipsList.innerHTML = '<div class="clip-empty">아직 클립이 없습니다.</div>';
+    return;
+  }
+  clips.forEach((clip) => {
+    const card = document.createElement('div');
+    card.className = 'clip-card';
+    card.innerHTML = `
+      <div class="clip-title">${clip.title}</div>
+      <div class="clip-meta">${clip.timeRange} · ${clip.messageCount} 로그</div>
+    `;
+    clipsList.appendChild(card);
+  });
 }
 
 async function loadSavedPosts() {
@@ -366,5 +392,6 @@ function connect() {
 
 loadSavedPosts();
 connect();
-updateStats(0, 0);
+updateStats();
+updateClips();
 renderChat();

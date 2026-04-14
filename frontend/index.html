@@ -3,83 +3,89 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>김태림 갓생 브이로그 대시보드</title>
+  <title>김태림 라이브 다시보기</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div class="effect-layer" id="effectLayer"></div>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <div class="logo-dot"></div>
-        <div class="titles">
-          <h1>김태림 갓생 브이로그</h1>
-          <p>Lifecast · 실시간 1인 방송국</p>
-        </div>
+  <div class="yt-app">
+    <header class="yt-header">
+      <div class="yt-brand">
+        <div class="yt-logo">▶</div>
+        <div class="yt-title">김태림 라이브 다시보기</div>
       </div>
-      <div class="top-actions">
-        <div class="live-pill">LIVE</div>
-        <button class="action">로그 보내기</button>
+      <div class="yt-search">
+        <input type="text" placeholder="라이브 다시보기 검색" />
+      </div>
+      <div class="yt-actions">
+        <div class="yt-live">LIVE</div>
+        <div class="yt-avatar">KT</div>
       </div>
     </header>
 
-    <section class="hero">
-      <div class="hero-inner">
-        <div class="hero-title">오늘의 브이로그: 산뜻한 갓생 라디오</div>
-        <div class="hero-sub">텔레그램 로그가 도착하면 타임라인에 부드럽게 기록되고, 응원 채팅이 함께 흐른다.</div>
-        <div class="hero-meta">오늘 · 일상/작업/운동 기록</div>
-      </div>
-    </section>
+    <main class="yt-layout">
+      <section class="yt-main">
+        <div class="live-card">
+          <div class="live-badge">오늘의 라이브 다시보기</div>
+          <h1 class="live-title" id="liveTitle">산뜻한 브이로그 데이 로그</h1>
+          <div class="live-meta" id="liveMeta">업로드 0개 · 시청 0회</div>
+          <div class="live-stats">
+            <div class="stat">
+              <span class="label">조회수</span>
+              <span class="value" id="viewCount">0</span>
+            </div>
+            <div class="stat">
+              <span class="label">좋아요</span>
+              <span class="value" id="likeCount">0</span>
+            </div>
+            <div class="stat">
+              <span class="label">싫어요</span>
+              <span class="value" id="dislikeCount">0</span>
+            </div>
+            <div class="stat">
+              <span class="label">댓글</span>
+              <span class="value" id="commentCount">0</span>
+            </div>
+            <div class="stat">
+              <span class="label">구독자</span>
+              <span class="value" id="subCount">0</span>
+            </div>
+            <div class="stat">
+              <span class="label">수익</span>
+              <span class="value" id="moneyCount">₩0</span>
+            </div>
+          </div>
+          <div class="live-tags" id="liveTags">
+            <span class="tag">브이로그</span>
+            <span class="tag">라이브</span>
+            <span class="tag">갓생</span>
+          </div>
+        </div>
 
-    <main class="dashboard">
-      <aside class="panel stats">
-        <div class="panel-header">
-          <span>Stats</span>
-          <span class="panel-sub">오늘의 성장</span>
+        <div class="section-head">
+          <h2>타임라인 챕터</h2>
+          <p>하루의 흐름이 하나의 라이브로 기록됩니다.</p>
         </div>
-        <div class="stat-grid">
-          <div class="stat-card">
-            <div class="stat-label">구독자(EXP)</div>
-            <div class="stat-value" id="statExp">0</div>
-            <div class="stat-delta" id="statExpDelta">+0</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">코인</div>
-            <div class="stat-value" id="statCoins">0</div>
-            <div class="stat-delta" id="statCoinsDelta">+0</div>
-          </div>
+        <div class="timeline-list" id="postList">
+          <div class="empty">아직 로그가 없습니다. 텔레그램으로 하루를 기록해보세요.</div>
         </div>
-        <div class="combo-card">
-          <div class="combo-header">
-            <span>콤보 게이지</span>
-            <span class="combo-count" id="statCombo">0일</span>
-          </div>
-          <div class="combo-bar">
-            <div class="combo-fill" id="comboFill"></div>
-          </div>
-          <div class="combo-tip">오늘도 작은 루틴을 지키면 잔잔한 버프가 켜집니다.</div>
-        </div>
-        <div class="mini-cards">
-          <div class="mini-card">🥤 수분 1L</div>
-          <div class="mini-card">📚 집중 50m</div>
-          <div class="mini-card">🚶 산책 20m</div>
-        </div>
-      </aside>
 
-      <section class="panel timeline">
-        <div class="panel-header">
-          <span>Timeline</span>
-          <span class="panel-sub">방금 올라온 로그</span>
+        <div class="section-head">
+          <h2>레전드 클립</h2>
+          <p>갓생 폭발 구간은 클립으로 자동 보관됩니다.</p>
         </div>
-        <div class="list" id="postList">
-          <div class="empty">아직 글이 없습니다. 텔레그램으로 첫 일상을 보내보세요.</div>
+        <div class="clips-list" id="clipsList">
+          <div class="clip-empty">아직 클립이 없습니다.</div>
         </div>
       </section>
 
-      <aside class="panel chat">
-        <div class="panel-header">
-          <span>Live Chat</span>
-          <span class="panel-sub">응원 스트림</span>
+      <aside class="yt-chat">
+        <div class="chat-head">
+          <div>
+            <div class="chat-title">라이브 채팅</div>
+            <div class="chat-sub">유튜브 감성 응원 스트림</div>
+          </div>
+          <button class="chat-pill">Top chat</button>
         </div>
         <div class="chat-list" id="chatList">
           <div class="chat-empty">첫 로그가 올라오면 채팅이 흐릅니다.</div>
