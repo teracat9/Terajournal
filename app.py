@@ -170,7 +170,9 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = ""
+    chat_id = None
     if update.message:
+        chat_id = update.message.chat_id
         if update.message.text:
             text = update.message.text.strip()
         elif update.message.caption:
@@ -184,6 +186,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     data = await generate_gallery_posts(text)
     payload = _build_payload(data)
     await broadcast(payload)
+
+    if chat_id and update.message:
+        posts = data.get("posts", [])
+        if posts:
+            post = posts[0]
+            response_text = f"📋 {post['title']}\n\n✍️ {post['author']}: {post['content']}\n\n"
+            for comment in post.get("comments", []):
+                response_text += f"💬 {comment['author']}: {comment['content']}\n"
+            
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=response_text[:4096])
+            except Exception as e:
+                logger.error(f"Failed to send message: {e}")
 
 
 @asynccontextmanager
