@@ -72,17 +72,22 @@ function renderChat() {
   });
 }
 
-function updateStats(newPostsCount) {
-  const expValue = posts.length * 120;
-  const coinValue = posts.length * 40;
-  const comboValue = Math.min(posts.length, 7);
+function getTotalMessages() {
+  return posts.reduce((sum, p) => sum + (p.messageCount || 0), 0);
+}
+
+function updateStats(newPostsCount, newMessageCount) {
+  const totalMessages = getTotalMessages();
+  const expValue = totalMessages * 30;
+  const coinValue = totalMessages * 8;
+  const comboValue = Math.min(posts.filter((p) => p.mood === 'GODLIFE').length, 7);
 
   if (statExp) statExp.textContent = expValue.toLocaleString();
   if (statCoins) statCoins.textContent = coinValue.toLocaleString();
   if (statCombo) statCombo.textContent = `${comboValue}일`;
 
-  if (statExpDelta) statExpDelta.textContent = `+${(newPostsCount * 120).toLocaleString()}`;
-  if (statCoinsDelta) statCoinsDelta.textContent = `+${(newPostsCount * 40).toLocaleString()}`;
+  if (statExpDelta) statExpDelta.textContent = `+${(newMessageCount * 30).toLocaleString()}`;
+  if (statCoinsDelta) statCoinsDelta.textContent = `+${(newMessageCount * 8).toLocaleString()}`;
 
   if (comboFill) {
     const percent = Math.min(100, comboValue * 14);
@@ -161,6 +166,7 @@ function renderList() {
       </div>
       <div class="card-chips">
         <span class="chip ${chipClass}">${moodLabel}</span>
+        <span class="chip">세션 ${post.messageCount}개</span>
         ${chipTags}
       </div>
       <div class="card-content">${post.preview}</div>
@@ -179,10 +185,10 @@ function openOverlay(post) {
       <p>${post.content}</p>
     </div>
     <div class="comments">
-      ${post.comments.map((c) => `
+      ${post.items.map((item) => `
         <div class="comment">
-          <div class="author">${c.author}</div>
-          <div class="content">${c.content}</div>
+          <div class="author">${item.author || '익명'}</div>
+          <div class="content">${item.content || ''}</div>
         </div>
       `).join('')}
     </div>
@@ -227,48 +233,68 @@ overlay.addEventListener('touchmove', (event) => {
   }
 });
 
-function addPosts(incoming) {
-  if (!incoming || !Array.isArray(incoming.posts)) return;
-
-  let godlifeCount = 0;
-  let lazyCount = 0;
-
-  incoming.posts.forEach((p) => {
-    const mood = classifyPost(p.content || '');
-    const tags = extractTags(p.content || '');
-    const post = {
-      id: crypto.randomUUID(),
-      title: p.title || '무제',
-      author: p.author || '익명',
-      content: p.content || '',
-      comments: Array.isArray(p.comments) ? p.comments : [],
-      preview: (p.content || '').slice(0, 80) + (p.content && p.content.length > 80 ? '...' : ''),
-      time: formatTime(),
-      isNew: true,
-      mood,
-      tags,
-    };
-    posts.unshift(post);
-    if (mood === 'GODLIFE') godlifeCount += 1;
-    if (mood === 'LAZY') lazyCount += 1;
-
-    const comments = Array.isArray(p.comments) ? p.comments : [];
-    comments.slice(0, 4).forEach((c) => {
-      chatFeed.unshift({
-        author: c.author || '익명',
-        content: c.content || '',
-        time: formatTime(),
+function rebuildChatFeed() {
+  chatFeed.length = 0;
+  posts.forEach((event) => {
+    event.items.forEach((item) => {
+      const comments = Array.isArray(item.comments) ? item.comments : [];
+      comments.slice(0, 2).forEach((c) => {
+        chatFeed.push({
+          author: c.author || '익명',
+          content: c.content || '',
+          time: event.time,
+        });
       });
     });
   });
-
+  chatFeed.reverse();
   chatFeed.splice(30);
+}
+
+function addPosts(incoming) {
+  if (!incoming || !Array.isArray(incoming.posts)) return;
+
+  const combinedText = incoming.posts.map((p) => p.content || '').join(' ');
+  const mood = classifyPost(combinedText);
+  const tags = extractTags(combinedText);
+  const eventId = incoming.event_id || crypto.randomUUID();
+  const existingIndex = posts.findIndex((p) => p.id === eventId);
+  const previousCount = existingIndex === -1 ? 0 : (posts[existingIndex].messageCount || 0);
+
+  const title = incoming.posts[0]?.title || '무제';
+  const author = incoming.posts[0]?.author || '익명';
+  const preview = combinedText.slice(0, 90) + (combinedText.length > 90 ? '...' : '');
+  const messageCount = incoming.message_count || incoming.posts.length;
+
+  const event = {
+    id: eventId,
+    title,
+    author,
+    content: combinedText,
+    comments: incoming.posts.flatMap((p) => p.comments || []),
+    preview,
+    time: formatTime(),
+    isNew: existingIndex === -1,
+    mood,
+    tags,
+    items: incoming.posts,
+    messageCount,
+  };
+
+  if (existingIndex === -1) {
+    posts.unshift(event);
+  } else {
+    posts[existingIndex] = event;
+  }
+
   updateSummary();
+  rebuildChatFeed();
   renderList();
   renderChat();
-  updateStats(incoming.posts.length);
-  const intensity = godlifeCount > 0 ? 2 : lazyCount > 0 ? 1 : 1;
-  const jackpot = godlifeCount > 0 && Math.random() < 0.1;
+  const deltaMessages = Math.max(0, messageCount - previousCount);
+  updateStats(1, deltaMessages);
+  const intensity = mood === 'GODLIFE' ? 2 : mood === 'LAZY' ? 1 : 1;
+  const jackpot = mood === 'GODLIFE' && Math.random() < 0.1;
   triggerSoftEffects(intensity, jackpot);
 }
 
@@ -284,7 +310,7 @@ function updateSummary() {
   summaryState.lines = [
     `갓생 로그 ${godlifeTotal}개 · 나태 로그 ${lazyTotal}개 · 일상 ${neutralTotal}개`,
     godlifeTotal > 0 ? '루틴이 이어지고 있어요. 내일도 가볍게 한 걸음.' : '쉬어가도 괜찮아요. 작은 루틴부터 다시 켜봅시다.',
-    `업로드 ${posts.length}개가 타임라인에 기록됨`,
+    `업로드 ${getTotalMessages()}개가 타임라인에 기록됨`,
   ];
 }
 
@@ -328,5 +354,5 @@ function connect() {
 
 loadSavedPosts();
 connect();
-updateStats(0);
+updateStats(0, 0);
 renderChat();

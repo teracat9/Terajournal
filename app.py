@@ -4,9 +4,10 @@ import logging
 import os
 import random
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Set, List
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
@@ -24,6 +25,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+AGG_WINDOW_MINUTES = int(os.getenv("AGG_WINDOW_MINUTES", "30"))
 
 client = genai.Client(api_key=GEMINI_API_KEY, http_options={'api_version': 'v1'}) if GEMINI_API_KEY else None
 
@@ -44,6 +46,9 @@ gallery_chronicle: List[Dict[str, str]] = []
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
+
+def _parse_iso(ts: str) -> datetime:
+    return datetime.fromisoformat(ts.replace("Z", ""))
 
 
 def generate_anonymous_name() -> str:
@@ -199,6 +204,42 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
         "gallery_summary": ""
     }
 
+def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
+    if not saved_posts:
+        event_id = str(uuid4())
+        return {
+            "event_id": event_id,
+            "event_start": now_iso,
+            "event_end": now_iso,
+            "message_count": 1,
+            **data,
+        }
+
+    last = saved_posts[-1]
+    try:
+        last_end = _parse_iso(last.get("event_end", now_iso))
+        now_dt = _parse_iso(now_iso)
+    except Exception:
+        last_end = _parse_iso(now_iso)
+        now_dt = _parse_iso(now_iso)
+
+    if now_dt - last_end <= timedelta(minutes=AGG_WINDOW_MINUTES):
+        last["posts"] = (last.get("posts") or []) + (data.get("posts") or [])
+        last["user_summary"] = data.get("user_summary", last.get("user_summary", ""))
+        last["gallery_summary"] = data.get("gallery_summary", last.get("gallery_summary", ""))
+        last["event_end"] = now_iso
+        last["message_count"] = int(last.get("message_count", 1)) + 1
+        return last
+
+    event_id = str(uuid4())
+    return {
+        "event_id": event_id,
+        "event_start": now_iso,
+        "event_end": now_iso,
+        "message_count": 1,
+        **data,
+    }
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = ""
@@ -214,9 +255,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     data = await generate_gallery_posts(text)
-    payload = _build_payload(data)
+    now_iso = _now_iso()
+    event = _upsert_event(data, now_iso)
+    payload = _build_payload(event)
     await broadcast(payload)
-    saved_posts.append(data)
+    if not saved_posts or saved_posts[-1].get("event_id") != event.get("event_id"):
+        saved_posts.append(event)
 
 
 @asynccontextmanager
