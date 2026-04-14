@@ -13,7 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.staticfiles import StaticFiles
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
-import google.generativeai as genai
+from google import genai
 
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -22,8 +22,10 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("taerim-gal")
@@ -134,7 +136,7 @@ def _build_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
     global user_chronicle, gallery_chronicle
 
-    if not GEMINI_API_KEY:
+    if not client:
         return {
             "posts": [{"title": "API 키 없음", "author": "시스템", "content": "GEMINI_API_KEY가 설정되지 않았습니다.", "comments": []}],
             "user_summary": "",
@@ -148,16 +150,14 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
 
 위의 글을 보고 갤러리 유저들이 실시간으로 싸우며 반응해줘."""
 
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(
-        model_name=GEMINI_MODEL,
-        system_instruction=system_prompt,
-    )
-
     def _call_model() -> str:
-        response = model.generate_content(
-            full_prompt,
-            generation_config={"response_mime_type": "application/json"},
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=full_prompt,
+            config=genai.types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json",
+            )
         )
         return response.text or ""
 
