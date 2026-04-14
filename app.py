@@ -154,10 +154,7 @@ async def generate_gallery_posts(user_text: str) -> Dict[str, Any]:
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=full_prompt,
-            config=genai.types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                response_mime_type="application/json",
-            )
+            config={'system_instruction': system_prompt, 'response_mime_type': 'application/json'}
         )
         return response.text or ""
 
