@@ -66,6 +66,14 @@ function sanitizeChannelState(rawState) {
   };
 }
 
+function syncChannelState(rawState) {
+  const saved = sanitizeChannelState(rawState);
+  Object.assign(channelState, saved);
+  rewardedEventIdSet.clear();
+  saved.rewardedEventIds.forEach((id) => rewardedEventIdSet.add(id));
+  return saved;
+}
+
 const channelState = createDefaultChannelState();
 const rewardedEventIdSet = new Set();
 let saveTimer = null;
@@ -93,10 +101,7 @@ async function saveChannelStateToServer() {
       body: JSON.stringify(payload),
     });
     if (res.ok) {
-      const saved = sanitizeChannelState(await res.json());
-      Object.assign(channelState, saved);
-      rewardedEventIdSet.clear();
-      saved.rewardedEventIds.forEach((id) => rewardedEventIdSet.add(id));
+      syncChannelState(await res.json());
     }
   } catch (err) {
     console.error('Failed to save channel state', err);
@@ -128,10 +133,7 @@ async function loadChannelStateFromServer() {
   try {
     const res = await fetch('/channel-state');
     if (!res.ok) return;
-    const remote = sanitizeChannelState(await res.json());
-    Object.assign(channelState, remote);
-    rewardedEventIdSet.clear();
-    remote.rewardedEventIds.forEach((id) => rewardedEventIdSet.add(id));
+    syncChannelState(await res.json());
   } catch (err) {
     console.error('Failed to load channel state', err);
   }
@@ -538,13 +540,19 @@ function addPosts(incoming, options = {}) {
     isClip,
   };
 
+  const serverState = incoming.channel_state;
+  if (serverState) {
+    syncChannelState(serverState);
+  }
+
   if (existingIndex === -1) {
     posts.unshift(event);
   } else {
     posts[existingIndex] = event;
   }
 
-  applyContentReward(event, rewardEligible && existingIndex === -1);
+  const rewardAlreadyApplied = Boolean(incoming.reward_applied) || Boolean(serverState);
+  applyContentReward(event, rewardEligible && existingIndex === -1 && !rewardAlreadyApplied);
   rebuildChatFeed();
   renderList();
   renderChat();

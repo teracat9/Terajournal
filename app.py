@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import random
-import sqlite3
 import base64
 import json as json_lib
 from contextlib import asynccontextmanager
@@ -12,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, Set, List, Optional, Tuple
 from uuid import uuid4
 
+import aiosqlite
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -40,6 +40,7 @@ app = FastAPI()
 
 connections: Set[WebSocket] = set()
 connections_lock = asyncio.Lock()
+db_lock: Optional[asyncio.Lock] = None
 
 bot_app = None
 bot_started = False
@@ -48,10 +49,31 @@ user_chronicle: List[Dict[str, str]] = []
 gallery_chronicle: List[Dict[str, str]] = []
 OWNER_NAME = "김태림"
 
-def init_db():
-    conn = sqlite3.connect(str(DB_PATH))
-    c = conn.cursor()
-    c.execute("""
+
+def _get_db_lock() -> asyncio.Lock:
+    global db_lock
+    if db_lock is None:
+        db_lock = asyncio.Lock()
+    return db_lock
+
+
+async def _configure_db(conn: aiosqlite.Connection) -> None:
+    await conn.execute("PRAGMA journal_mode=WAL")
+    await conn.execute("PRAGMA synchronous=NORMAL")
+    await conn.execute("PRAGMA busy_timeout=5000")
+
+
+def _event_for_storage(event: Dict[str, Any]) -> Dict[str, Any]:
+    stored = dict(event)
+    stored.pop("channel_state", None)
+    stored.pop("reward_applied", None)
+    return stored
+
+
+async def init_db() -> None:
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await _configure_db(conn)
+        await conn.execute("""
         CREATE TABLE IF NOT EXISTS events (
             id TEXT PRIMARY KEY,
             event_start TEXT,
@@ -62,7 +84,7 @@ def init_db():
             data TEXT
         )
     """)
-    c.execute("""
+        await conn.execute("""
         CREATE TABLE IF NOT EXISTS chronicles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT,
@@ -70,43 +92,43 @@ def init_db():
             time TEXT
         )
     """)
-    c.execute("""
+        await conn.execute("""
         CREATE TABLE IF NOT EXISTS channel_state (
             key TEXT PRIMARY KEY,
             data TEXT,
             updated_at TEXT
         )
     """)
-    conn.commit()
-    conn.close()
+
+        await conn.commit()
 
 
-def save_event_to_db(event: Dict[str, Any]):
-    conn = sqlite3.connect(str(DB_PATH))
-    c = conn.cursor()
-    data_json = json_lib.dumps(event)
-    c.execute("""
+async def save_event_to_db(event: Dict[str, Any]) -> None:
+    async with _get_db_lock():
+        async with aiosqlite.connect(str(DB_PATH)) as conn:
+            await _configure_db(conn)
+            data_json = json_lib.dumps(_event_for_storage(event), ensure_ascii=False)
+            await conn.execute("""
         INSERT OR REPLACE INTO events (id, event_start, event_end, message_count, mood, event_title, data)
         VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (
-        event.get("event_id"),
-        event.get("event_start"),
-        event.get("event_end"),
-        event.get("message_count", 1),
-        event.get("mood", "NEUTRAL"),
-        event.get("event_title"),
-        data_json
-    ))
-    conn.commit()
-    conn.close()
+                event.get("event_id"),
+                event.get("event_start"),
+                event.get("event_end"),
+                event.get("message_count", 1),
+                event.get("mood", "NEUTRAL"),
+                event.get("event_title"),
+                data_json
+            ))
+            await conn.commit()
 
 
-def save_chronicle_to_db(chronicle_type: str, content: str, time_iso: str):
-    conn = sqlite3.connect(str(DB_PATH))
-    c = conn.cursor()
-    c.execute("INSERT INTO chronicles (type, content, time) VALUES (?, ?, ?)", (chronicle_type, content, time_iso))
-    conn.commit()
-    conn.close()
+async def save_chronicle_to_db(chronicle_type: str, content: str, time_iso: str) -> None:
+    async with _get_db_lock():
+        async with aiosqlite.connect(str(DB_PATH)) as conn:
+            await _configure_db(conn)
+            await conn.execute("INSERT INTO chronicles (type, content, time) VALUES (?, ?, ?)", (chronicle_type, content, time_iso))
+            await conn.commit()
 
 
 def _default_channel_state() -> Dict[str, Any]:
@@ -122,13 +144,38 @@ def _default_channel_state() -> Dict[str, Any]:
     }
 
 
-def load_channel_state_from_db() -> Dict[str, Any]:
+def _sanitize_channel_state(raw: Dict[str, Any], defaults: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    defaults = defaults or _default_channel_state()
+
+    def _safe_int(v: Any, default: int = 0) -> int:
+        try:
+            return max(0, int(v))
+        except Exception:
+            return default
+
+    rewarded_raw = raw.get("rewardedEventIds", [])
+    rewarded = [str(x) for x in rewarded_raw if isinstance(x, (str, int, float))]
+    rewarded = rewarded[-800:]
+
+    return {
+        "views": _safe_int(raw.get("views", defaults["views"])),
+        "likes": _safe_int(raw.get("likes", defaults["likes"])),
+        "dislikes": _safe_int(raw.get("dislikes", defaults["dislikes"])),
+        "subs": _safe_int(raw.get("subs", defaults["subs"])),
+        "money": _safe_int(raw.get("money", defaults["money"])),
+        "xp": _safe_int(raw.get("xp", defaults["xp"])),
+        "rewardedEventIds": rewarded,
+        "lastTickAt": _safe_int(raw.get("lastTickAt", defaults["lastTickAt"]), defaults["lastTickAt"]),
+    }
+
+
+async def load_channel_state_from_db() -> Dict[str, Any]:
     defaults = _default_channel_state()
-    conn = sqlite3.connect(str(DB_PATH))
-    c = conn.cursor()
-    c.execute("SELECT data FROM channel_state WHERE key = 'main' LIMIT 1")
-    row = c.fetchone()
-    conn.close()
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await _configure_db(conn)
+        cursor = await conn.execute("SELECT data FROM channel_state WHERE key = 'main' LIMIT 1")
+        row = await cursor.fetchone()
+        await cursor.close()
 
     if not row:
         return defaults
@@ -140,74 +187,68 @@ def load_channel_state_from_db() -> Dict[str, Any]:
     except Exception:
         return defaults
 
-    def _safe_int(v: Any, default: int = 0) -> int:
-        try:
-            return max(0, int(v))
-        except Exception:
-            return default
-
-    rewarded_raw = parsed.get("rewardedEventIds", [])
-    rewarded = [str(x) for x in rewarded_raw if isinstance(x, (str, int, float))]
-    rewarded = rewarded[-800:]
-
-    state = {
-        "views": _safe_int(parsed.get("views", defaults["views"])),
-        "likes": _safe_int(parsed.get("likes", defaults["likes"])),
-        "dislikes": _safe_int(parsed.get("dislikes", defaults["dislikes"])),
-        "subs": _safe_int(parsed.get("subs", defaults["subs"])),
-        "money": _safe_int(parsed.get("money", defaults["money"])),
-        "xp": _safe_int(parsed.get("xp", defaults["xp"])),
-        "rewardedEventIds": rewarded,
-        "lastTickAt": _safe_int(parsed.get("lastTickAt", defaults["lastTickAt"]), defaults["lastTickAt"]),
-    }
-    return state
+    return _sanitize_channel_state(parsed, defaults)
 
 
-def save_channel_state_to_db(state: Dict[str, Any]) -> Dict[str, Any]:
-    current = load_channel_state_from_db()
-    merged = {**current, **(state or {})}
+async def _read_channel_state_from_conn(conn: aiosqlite.Connection) -> Dict[str, Any]:
+    defaults = _default_channel_state()
+    cursor = await conn.execute("SELECT data FROM channel_state WHERE key = 'main' LIMIT 1")
+    row = await cursor.fetchone()
+    await cursor.close()
 
-    sanitized = {
-        "views": max(0, int(merged.get("views", 0))),
-        "likes": max(0, int(merged.get("likes", 0))),
-        "dislikes": max(0, int(merged.get("dislikes", 0))),
-        "subs": max(0, int(merged.get("subs", 0))),
-        "money": max(0, int(merged.get("money", 0))),
-        "xp": max(0, int(merged.get("xp", 0))),
-        "rewardedEventIds": [str(x) for x in merged.get("rewardedEventIds", []) if isinstance(x, (str, int, float))][-800:],
-        "lastTickAt": max(0, int(merged.get("lastTickAt", _default_channel_state()["lastTickAt"]))),
-    }
+    if not row:
+        return defaults
 
-    conn = sqlite3.connect(str(DB_PATH))
-    c = conn.cursor()
-    c.execute("""
+    try:
+        parsed = json_lib.loads(row[0]) if row[0] else {}
+        if not isinstance(parsed, dict):
+            return defaults
+    except Exception:
+        return defaults
+
+    return _sanitize_channel_state(parsed, defaults)
+
+
+async def _write_channel_state_to_conn(conn: aiosqlite.Connection, state: Dict[str, Any]) -> Dict[str, Any]:
+    sanitized = _sanitize_channel_state(state)
+    await conn.execute("""
         INSERT OR REPLACE INTO channel_state (key, data, updated_at)
         VALUES (?, ?, ?)
     """, ("main", json_lib.dumps(sanitized, ensure_ascii=False), _now_iso()))
-    conn.commit()
-    conn.close()
     return sanitized
 
 
-def load_all_from_db():
+async def save_channel_state_to_db(state: Dict[str, Any]) -> Dict[str, Any]:
+    async with _get_db_lock():
+        async with aiosqlite.connect(str(DB_PATH)) as conn:
+            await _configure_db(conn)
+            current = await _read_channel_state_from_conn(conn)
+            merged = {**current, **(state or {})}
+            sanitized = await _write_channel_state_to_conn(conn, merged)
+            await conn.commit()
+            return sanitized
+
+
+async def load_all_from_db() -> None:
     global saved_posts, user_chronicle, gallery_chronicle
     
-    conn = sqlite3.connect(str(DB_PATH))
-    c = conn.cursor()
-    
-    c.execute("SELECT data FROM events ORDER BY event_start DESC LIMIT 100")
-    rows = c.fetchall()
-    saved_posts = [json_lib.loads(row[0]) for row in rows] if rows else []
-    
-    c.execute("SELECT type, content, time FROM chronicles WHERE type='user' ORDER BY id DESC LIMIT 50")
-    user_rows = c.fetchall()
-    user_chronicle = [{"content": r[1], "time": r[2]} for r in user_rows] if user_rows else []
-    
-    c.execute("SELECT type, content, time FROM chronicles WHERE type='gallery' ORDER BY id DESC LIMIT 50")
-    gallery_rows = c.fetchall()
-    gallery_chronicle = [{"content": r[1], "time": r[2]} for r in gallery_rows] if gallery_rows else []
-    
-    conn.close()
+    async with aiosqlite.connect(str(DB_PATH)) as conn:
+        await _configure_db(conn)
+
+        cursor = await conn.execute("SELECT data FROM events ORDER BY event_start DESC LIMIT 100")
+        rows = await cursor.fetchall()
+        await cursor.close()
+        saved_posts = [json_lib.loads(row[0]) for row in rows] if rows else []
+
+        cursor = await conn.execute("SELECT type, content, time FROM chronicles WHERE type='user' ORDER BY id DESC LIMIT 50")
+        user_rows = await cursor.fetchall()
+        await cursor.close()
+        user_chronicle = [{"content": r[1], "time": r[2]} for r in user_rows] if user_rows else []
+
+        cursor = await conn.execute("SELECT type, content, time FROM chronicles WHERE type='gallery' ORDER BY id DESC LIMIT 50")
+        gallery_rows = await cursor.fetchall()
+        await cursor.close()
+        gallery_chronicle = [{"content": r[1], "time": r[2]} for r in gallery_rows] if gallery_rows else []
 
 
 def _now_iso() -> str:
@@ -229,6 +270,68 @@ def _label_from_score(score: int) -> str:
     if score <= 30:
         return "LAZY"
     return "NEUTRAL"
+
+
+def _reward_delta_from_score(score: int) -> Dict[str, int]:
+    views_gain = 0
+    likes_gain = 0
+    dislikes_gain = 0
+    subs_gain = 0
+    money_gain = 0
+    xp_gain = 0
+
+    if score >= 70:
+        views_gain = 60 + (score - 70) * 6
+        likes_gain = max(0, int(views_gain * (0.08 + (score - 70) / 400)))
+        dislikes_gain = max(0, int(views_gain * 0.004))
+        subs_gain = max(1, int((score - 65) / 10)) + (2 if score >= 85 else 0)
+        money_gain = 1200 + score * 42
+        xp_gain = 30 + int((score - 65) * 1.5)
+    elif score <= 30:
+        dislikes_gain = 1 + int((30 - score) / 8)
+        xp_gain = 3
+    else:
+        xp_gain = 6 + int((score - 40) / 6)
+
+    return {
+        "views": max(0, views_gain),
+        "likes": max(0, likes_gain),
+        "dislikes": max(0, dislikes_gain),
+        "subs": max(0, subs_gain),
+        "money": max(0, money_gain),
+        "xp": max(0, xp_gain),
+    }
+
+
+async def _apply_event_reward(event: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    event_id = str(event.get("event_id") or "")
+    if not event_id:
+        return await load_channel_state_from_db(), False
+
+    async with _get_db_lock():
+        async with aiosqlite.connect(str(DB_PATH)) as conn:
+            await _configure_db(conn)
+            state = await _read_channel_state_from_conn(conn)
+        if event_id in state.get("rewardedEventIds", []):
+            return state, False
+
+        score = _clamp_life_score(event.get("life_score"), 50)
+        delta = _reward_delta_from_score(score)
+        state["views"] += delta["views"]
+        state["likes"] += delta["likes"]
+        state["dislikes"] += delta["dislikes"]
+        state["subs"] += delta["subs"]
+        state["money"] += delta["money"]
+        state["xp"] += delta["xp"]
+        state["lastTickAt"] = int(datetime.utcnow().timestamp() * 1000)
+        rewarded = list(state.get("rewardedEventIds", []))
+        rewarded.append(event_id)
+        state["rewardedEventIds"] = rewarded[-800:]
+        async with aiosqlite.connect(str(DB_PATH)) as conn:
+            await _configure_db(conn)
+            saved_state = await _write_channel_state_to_conn(conn, state)
+            await conn.commit()
+        return saved_state, True
 
 def _extract_posts_and_live_comments(raw_posts: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
     cleaned_posts: List[Dict[str, Any]] = []
@@ -411,11 +514,13 @@ async def generate_gallery_posts(
                     {"text": full_prompt},
                     {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(image_data).decode()}}
                 ],
+                config={"response_mime_type": "application/json"},
             )
         else:
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=full_prompt,
+                config={"response_mime_type": "application/json"},
             )
         return response.text or ""
 
@@ -462,8 +567,8 @@ async def generate_gallery_posts(
             user_chronicle.append({"content": user_summary, "time": _now_iso()})
             gallery_chronicle.append({"content": gallery_summary, "time": _now_iso()})
             
-            save_chronicle_to_db("user", user_summary, _now_iso())
-            save_chronicle_to_db("gallery", gallery_summary, _now_iso())
+            await save_chronicle_to_db("user", user_summary, _now_iso())
+            await save_chronicle_to_db("gallery", gallery_summary, _now_iso())
 
             if len(user_chronicle) > 50:
                 user_chronicle = user_chronicle[-50:]
@@ -493,7 +598,7 @@ async def generate_gallery_posts(
         "gallery_summary": ""
     }
 
-def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
+async def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
     if not saved_posts:
         event_id = str(uuid4())
         event = {
@@ -507,7 +612,7 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
             "event_title": data.get("event_title") or _make_event_title(data.get("user_summary", "")),
             **data,
         }
-        save_event_to_db(event)
+        await save_event_to_db(event)
         return event
 
     last = saved_posts[-1]
@@ -536,7 +641,7 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         last["message_count"] = previous_count + incoming_count
         last["mood"] = _label_from_score(last["life_score"])
         last["event_title"] = data.get("event_title") or last.get("event_title")
-        save_event_to_db(last)
+        await save_event_to_db(last)
         return last
 
     event_id = str(uuid4())
@@ -551,7 +656,7 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         "event_title": data.get("event_title") or _make_event_title(data.get("user_summary", "")),
         **data,
     }
-    save_event_to_db(event)
+    await save_event_to_db(event)
     return event
 
 
@@ -594,8 +699,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     # 정상 응답만 저장
-    event = _upsert_event(data, now_iso)
-    payload = _build_payload(event)
+    event = await _upsert_event(data, now_iso)
+    channel_state, reward_applied = await _apply_event_reward(event)
+    payload = _build_payload({**event, "channel_state": channel_state, "reward_applied": reward_applied})
     await broadcast(payload)
     if not saved_posts or saved_posts[-1].get("event_id") != event.get("event_id"):
         saved_posts.insert(0, event)
@@ -605,8 +711,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def lifespan(app: FastAPI):
     global bot_app, bot_started
     
-    init_db()
-    load_all_from_db()
+    await init_db()
+    await load_all_from_db()
     
     if TELEGRAM_TOKEN and RENDER_URL:
         bot_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -682,22 +788,22 @@ async def get_chronicles() -> Dict[str, List[Dict[str, str]]]:
 
 @app.get("/channel-state")
 async def get_channel_state() -> Dict[str, Any]:
-    return load_channel_state_from_db()
+    return await load_channel_state_from_db()
 
 
 @app.post("/channel-state")
 async def set_channel_state(state: Dict[str, Any]) -> Dict[str, Any]:
-    return save_channel_state_to_db(state)
+    return await save_channel_state_to_db(state)
 
 
 @app.post("/clear-posts")
 async def clear_posts() -> Dict[str, str]:
     global saved_posts
-    conn = sqlite3.connect(str(DB_PATH))
-    c = conn.cursor()
-    c.execute("DELETE FROM events")
-    conn.commit()
-    conn.close()
+    async with _get_db_lock():
+        async with aiosqlite.connect(str(DB_PATH)) as conn:
+            await _configure_db(conn)
+            await conn.execute("DELETE FROM events")
+            await conn.commit()
     saved_posts = []
     return {"status": "cleared"}
 
@@ -705,11 +811,11 @@ async def clear_posts() -> Dict[str, str]:
 @app.post("/clear-chronicles")
 async def clear_chronicles() -> Dict[str, str]:
     global user_chronicle, gallery_chronicle
-    conn = sqlite3.connect(str(DB_PATH))
-    c = conn.cursor()
-    c.execute("DELETE FROM chronicles")
-    conn.commit()
-    conn.close()
+    async with _get_db_lock():
+        async with aiosqlite.connect(str(DB_PATH)) as conn:
+            await _configure_db(conn)
+            await conn.execute("DELETE FROM chronicles")
+            await conn.commit()
     user_chronicle = []
     gallery_chronicle = []
     return {"status": "cleared"}
