@@ -174,6 +174,22 @@ function moodFromScore(score) {
   return 'NEUTRAL';
 }
 
+function compactText(value, limit = 60) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text;
+}
+
+function syncChapterNumbers() {
+  const counters = new Map();
+  posts.forEach((post) => {
+    const key = post.dayKey || 'unknown';
+    const next = (counters.get(key) || 0) + 1;
+    counters.set(key, next);
+    post.chapterNum = next;
+  });
+}
+
 function renderChat() {
   if (!chatList) return;
   chatList.innerHTML = '';
@@ -367,7 +383,7 @@ function updateStats() {
 
   if (liveTitle) {
     const latest = posts[0];
-    liveTitle.textContent = latest ? `${latest.dayLabel} 라이브 다시보기` : '산뜻한 브이로그 데이 로그';
+    liveTitle.textContent = latest ? `${latest.dayLabel} 챕터 다시보기` : '산뜻한 브이로그 챕터 로그';
   }
   updateGameSystems({
     views,
@@ -390,10 +406,10 @@ function renderList() {
     if (post.dayKey && post.dayKey !== lastDayKey) {
       lastDayKey = post.dayKey;
       const dayRow = document.createElement('div');
-      dayRow.className = 'card';
+      dayRow.className = 'chapter-day';
       dayRow.innerHTML = `
-        <div class="card-title">${post.dayLabel} 라이브 다시보기</div>
-        <div class="card-content">하루 기록이 하나의 라이브로 남습니다.</div>
+        <div class="chapter-day-label">${post.dayLabel}</div>
+        <div class="chapter-day-sub">하루 기록이 하나의 라이브 챕터로 남습니다.</div>
       `;
       postList.appendChild(dayRow);
     }
@@ -407,18 +423,26 @@ function renderList() {
     const chipClass = post.mood === 'GODLIFE' ? 'godlife' : post.mood === 'LAZY' ? 'lazy' : 'neutral';
     const moodLabel = post.mood === 'GODLIFE' ? '상승' : post.mood === 'LAZY' ? '하강' : '균형';
     card.innerHTML = `
-      <div class="card-title">${post.title}</div>
-      <div class="card-meta">
-        <span>${post.author}</span>
-        <span>${post.timeRange}</span>
+      <div class="chapter-layout">
+        <div class="chapter-thumb ${chipClass}">
+          <span class="chapter-num">CH.${post.chapterNum || 1}</span>
+          <span class="chapter-time">${post.messageCount} Logs</span>
+        </div>
+        <div class="chapter-info">
+          <div class="card-title">${post.title}</div>
+          <div class="card-meta">
+            <span>${post.author}</span>
+            <span>${post.timeRange}</span>
+          </div>
+          <div class="card-chips">
+            <span class="chip-inline ${chipClass}">${post.lifeScore}점 ${moodLabel}</span>
+            <span class="chip-inline">세션 ${post.messageCount}개</span>
+            ${post.lifeReason ? `<span class="chip-inline muted">${post.lifeReason}</span>` : ''}
+            ${post.isClip ? '<span class="chip-inline gold">레전드 클립</span>' : ''}
+          </div>
+          <div class="card-content">${post.preview}</div>
+        </div>
       </div>
-      <div class="card-chips">
-        <span class="chip ${chipClass}">AI 생활지수 ${post.lifeScore}점 (${moodLabel})</span>
-        <span class="chip">세션 ${post.messageCount}개</span>
-        ${post.lifeReason ? `<span class="chip">${post.lifeReason}</span>` : ''}
-        ${post.isClip ? '<span class="chip godlife">레전드 클립</span>' : ''}
-      </div>
-      <div class="card-content">${post.preview}</div>
     `;
 
     card.addEventListener('click', () => openOverlay(post));
@@ -502,7 +526,9 @@ function addPosts(incoming, options = {}) {
   if (!incoming || !Array.isArray(incoming.posts)) return;
   const rewardEligible = options.rewardEligible !== false;
 
-  const combinedText = incoming.posts.map((p) => p.content || '').join(' ');
+  const latestPostContent = incoming.posts[incoming.posts.length - 1]?.content || incoming.posts[0]?.content || '';
+  const previewSource = incoming.user_summary || latestPostContent || incoming.posts[0]?.content || '';
+  const preview = compactText(previewSource, 52);
   const lifeScore = normalizeLifeScore(incoming.life_score);
   const mood = incoming.mood || moodFromScore(lifeScore);
   const eventId = incoming.event_id || crypto.randomUUID();
@@ -510,19 +536,19 @@ function addPosts(incoming, options = {}) {
 
   const title = incoming.event_title || incoming.posts[0]?.title || '무제';
   const author = incoming.posts[0]?.author || '익명';
-  const preview = combinedText.slice(0, 90) + (combinedText.length > 90 ? '...' : '');
   const messageCount = incoming.message_count || incoming.posts.length;
   const timeRange = formatRange(incoming.event_start, incoming.event_end);
   const eventStart = incoming.event_start ? new Date(incoming.event_start) : new Date();
   const dayKey = eventStart.toISOString().slice(0, 10);
   const dayLabel = formatDayLabel(eventStart);
   const isClip = lifeScore >= 75 && messageCount >= 4;
+  const isSystemEvent = author === '시스템';
 
   const event = {
     id: eventId,
     title,
     author,
-    content: combinedText,
+    content: preview,
     liveComments: Array.isArray(incoming.live_comments)
       ? incoming.live_comments.filter((c) => c && c.content)
       : [],
@@ -552,7 +578,8 @@ function addPosts(incoming, options = {}) {
   }
 
   const rewardAlreadyApplied = Boolean(incoming.reward_applied) || Boolean(serverState);
-  applyContentReward(event, rewardEligible && existingIndex === -1 && !rewardAlreadyApplied);
+  applyContentReward(event, rewardEligible && existingIndex === -1 && !rewardAlreadyApplied && !isSystemEvent);
+  syncChapterNumbers();
   rebuildChatFeed();
   renderList();
   renderChat();

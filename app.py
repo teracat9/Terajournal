@@ -272,6 +272,14 @@ def _label_from_score(score: int) -> str:
     return "NEUTRAL"
 
 
+def _compact_text(value: Any, default: str = "", limit: int = 32) -> str:
+    text = str(value if value is not None else default).strip()
+    text = " ".join(text.replace("\n", " ").split())
+    if not text:
+        return default
+    return text[:limit].rstrip()
+
+
 def _reward_delta_from_score(score: int) -> Dict[str, int]:
     views_gain = 0
     likes_gain = 0
@@ -301,6 +309,13 @@ def _reward_delta_from_score(score: int) -> Dict[str, int]:
         "money": max(0, money_gain),
         "xp": max(0, xp_gain),
     }
+
+
+def _sanitize_event_summaries(data: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned = dict(data)
+    cleaned["user_summary"] = _compact_text(cleaned.get("user_summary"), cleaned.get("user_summary", ""), 24)
+    cleaned["gallery_summary"] = _compact_text(cleaned.get("gallery_summary"), cleaned.get("gallery_summary", ""), 24)
+    return cleaned
 
 
 async def _apply_event_reward(event: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
@@ -415,7 +430,7 @@ def build_system_prompt(has_image: bool = False, image_description: str = "") ->
 2. 댓글은 서로 친근하게 이어짐 (싸움/욕설 금지)
 3. 갤러리 연대기와 사용자 연대기를 참고해서 맥락 유지
 4. 절대 마크다운 사용 금지
-5. 본문은 짧고 담백하게
+5. 본문은 유튜브 챕터 설명처럼 핵심만 1줄, 20자 이내로 아주 짧게
 6. 사진이 있으면 사진 내용을 구체적으로 언급하며 반응{user_summary}{gallery_summary}{image_context}
 7. 타임라인에는 게시글 본문만 들어가야 하므로, 댓글은 live_comments에만 넣기
 8. life_score는 키워드 매칭이 아닌 맥락 기반 AI 판단으로 0~100 정수로 산출
@@ -425,15 +440,15 @@ def build_system_prompt(has_image: bool = False, image_description: str = "") ->
    - 단, 하루 전체 균형을 보고 최종 점수를 매긴다 (이분법 금지)
    - life_reason에는 왜 높거나 낮게 줬는지 위 기준으로 짧게 설명
 10. posts.author는 항상 "{OWNER_NAME}"으로 고정
-11. title은 메인 카드용이므로 6~12자 안쪽으로 짧고 깔끔하게 작성
+11. title은 챕터 제목처럼 6~12자 안쪽으로 짧고 깔끔하게 작성
 
 【응답 형식】
 {{
   "posts": [
     {{
-      "title": "6~12자 짧은 제목",
+      "title": "국어 모의고사 1회차",
       "author": "{OWNER_NAME}",
-      "content": "브이로그 톤의 짧은 본문 (2-3줄)"
+      "content": "비문학 집중 훈련 중"
     }}
   ],
   "live_comments": [
@@ -544,11 +559,11 @@ async def generate_gallery_posts(
     try:
         parsed = json_lib.loads(raw)
         if isinstance(parsed, dict) and "posts" in parsed:
-            user_summary = parsed.get("user_summary", user_text[:50] if user_text else "사진 전송")
+            user_summary = _compact_text(parsed.get("user_summary"), user_text[:50] if user_text else "사진 전송", 24)
             cleaned_posts, extracted_comments = _extract_posts_and_live_comments(parsed.get("posts"))
             if not cleaned_posts:
                 cleaned_posts = [{"title": _make_event_title("오늘의 기록"), "author": OWNER_NAME, "content": user_text[:120]}]
-            gallery_summary = parsed.get("gallery_summary", str(cleaned_posts[0].get("content", ""))[:50])
+            gallery_summary = _compact_text(parsed.get("gallery_summary"), str(cleaned_posts[0].get("content", ""))[:50], 24)
             explicit_live_comments = parsed.get("live_comments", [])
             if isinstance(explicit_live_comments, list):
                 live_comments = [
@@ -576,7 +591,7 @@ async def generate_gallery_posts(
                 gallery_chronicle = gallery_chronicle[-50:]
 
             life_score = _clamp_life_score(parsed.get("life_score"), 50)
-            return {
+            return _sanitize_event_summaries({
                 "posts": cleaned_posts,
                 "live_comments": live_comments,
                 "life_score": life_score,
@@ -585,7 +600,7 @@ async def generate_gallery_posts(
                 "event_title": _make_event_title(user_summary),
                 "user_summary": user_summary,
                 "gallery_summary": gallery_summary,
-            }
+            })
     except json_lib.JSONDecodeError:
         logger.exception("Gemini JSON parse failed")
 
@@ -615,7 +630,7 @@ async def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         await save_event_to_db(event)
         return event
 
-    last = saved_posts[-1]
+    last = saved_posts[0]
     try:
         last_end = _parse_iso(last.get("event_end", now_iso))
         now_dt = _parse_iso(now_iso)
@@ -628,8 +643,8 @@ async def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         last["live_comments"] = (last.get("live_comments") or []) + (data.get("live_comments") or [])
         if len(last["live_comments"]) > 200:
             last["live_comments"] = last["live_comments"][-200:]
-        last["user_summary"] = data.get("user_summary", last.get("user_summary", ""))
-        last["gallery_summary"] = data.get("gallery_summary", last.get("gallery_summary", ""))
+        last["user_summary"] = _compact_text(data.get("user_summary", last.get("user_summary", "")), last.get("user_summary", ""), 24)
+        last["gallery_summary"] = _compact_text(data.get("gallery_summary", last.get("gallery_summary", "")), last.get("gallery_summary", ""), 24)
         previous_count = int(last.get("message_count", 1))
         incoming_count = max(1, int(data.get("message_count", len(data.get("posts") or []) or 1)))
         current_score = _clamp_life_score(last.get("life_score"), 50)
@@ -651,7 +666,7 @@ async def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         "event_end": now_iso,
         "message_count": 1,
         "life_score": _clamp_life_score(data.get("life_score"), 50),
-        "life_reason": data.get("life_reason", ""),
+        "life_reason": _compact_text(data.get("life_reason", ""), "", 48),
         "mood": data.get("mood", "NEUTRAL"),
         "event_title": data.get("event_title") or _make_event_title(data.get("user_summary", "")),
         **data,
@@ -703,7 +718,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     channel_state, reward_applied = await _apply_event_reward(event)
     payload = _build_payload({**event, "channel_state": channel_state, "reward_applied": reward_applied})
     await broadcast(payload)
-    if not saved_posts or saved_posts[-1].get("event_id") != event.get("event_id"):
+    if not saved_posts or saved_posts[0].get("event_id") != event.get("event_id"):
         saved_posts.insert(0, event)
 
 

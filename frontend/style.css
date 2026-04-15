@@ -329,19 +329,42 @@ body::before {
   gap: 10px;
 }
 
+.chapter-day {
+  padding: 6px 4px 2px;
+}
+
+.chapter-day-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #f6d59a;
+}
+
+.chapter-day-sub {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .card {
-  background: var(--card);
-  border-radius: 14px;
-  padding: 14px 16px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.03), transparent 38%),
+    var(--card);
+  border-radius: 18px;
+  padding: 14px;
   border: 1px solid var(--line);
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.34);
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+  position: relative;
+  overflow: hidden;
 }
 
 .card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 18px 28px rgba(0, 0, 0, 0.35);
+  transform: translateY(-3px);
+  box-shadow: 0 22px 42px rgba(0, 0, 0, 0.42);
+  border-color: rgba(245, 180, 82, 0.2);
 }
 
 .card.new {
@@ -378,6 +401,42 @@ body::before {
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.chip-inline {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.chip-inline.godlife {
+  color: #1f1202;
+  background: linear-gradient(135deg, #f7d48b, #f5b452);
+}
+
+.chip-inline.lazy {
+  color: #1d0706;
+  background: linear-gradient(135deg, #ffb1aa, #ff7f74);
+}
+
+.chip-inline.neutral {
+  color: #dce4ff;
+  background: linear-gradient(135deg, rgba(137, 166, 255, 0.3), rgba(69, 86, 130, 0.3));
+}
+
+.chip-inline.gold {
+  color: #231606;
+  background: linear-gradient(135deg, #ffe4a7, #f5c26b);
+}
+
+.chip-inline.muted {
+  color: var(--muted);
+}
+
 .chip.godlife {
   background: rgba(245, 180, 82, 0.2);
   color: #f5c26b;
@@ -397,6 +456,85 @@ body::before {
   font-size: 12.5px;
   line-height: 1.5;
   color: #d8d9df;
+}
+
+.chapter-layout {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+}
+
+.chapter-thumb {
+  width: 122px;
+  min-height: 82px;
+  border-radius: 14px;
+  padding: 10px 10px 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  flex-shrink: 0;
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.chapter-thumb::before {
+  content: "";
+  position: absolute;
+  inset: -30% -20% auto auto;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.2), transparent 70%);
+  opacity: 0.75;
+}
+
+.chapter-thumb.godlife {
+  background:
+    linear-gradient(135deg, rgba(245, 180, 82, 0.28), rgba(255, 255, 255, 0.06)),
+    linear-gradient(165deg, #2a1a08, #151515 70%);
+}
+
+.chapter-thumb.lazy {
+  background:
+    linear-gradient(135deg, rgba(255, 59, 48, 0.25), rgba(0, 0, 0, 0.08)),
+    linear-gradient(165deg, #261112, #151515 70%);
+}
+
+.chapter-thumb.neutral {
+  background:
+    linear-gradient(135deg, rgba(137, 166, 255, 0.2), rgba(255, 255, 255, 0.04)),
+    linear-gradient(165deg, #181c2c, #151515 70%);
+}
+
+.chapter-num {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 24px;
+  letter-spacing: 1px;
+  line-height: 1;
+  position: relative;
+  z-index: 1;
+}
+
+.chapter-time {
+  position: relative;
+  z-index: 1;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.88);
+  align-self: flex-end;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.chapter-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .clips-list {
@@ -636,5 +774,23 @@ body::before {
 
   .systems-grid {
     grid-template-columns: 1fr;
+  }
+
+  .chapter-layout {
+    flex-direction: column;
+  }
+
+  .chapter-thumb {
+    width: 100%;
+    min-height: 72px;
+  }
+
+  .card-meta {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .card-chips {
+    margin-bottom: 8px;
   }
 }
