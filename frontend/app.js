@@ -514,7 +514,7 @@ function rebuildChatFeed() {
       chatFeed.push({
         author: c.author || '익명',
         content: c.content || '',
-        time: event.time,
+        time: c.time || event.time,
       });
     });
   });

@@ -281,6 +281,16 @@ def _compact_text(value: Any, default: str = "", limit: int = 32) -> str:
     return text[:limit].rstrip()
 
 
+def _current_time_context() -> str:
+    now_kst = datetime.utcnow() + timedelta(hours=9)
+    return now_kst.strftime("%Y-%m-%d %H:%M KST")
+
+
+def _current_time_label() -> str:
+    now_kst = datetime.utcnow() + timedelta(hours=9)
+    return now_kst.strftime("%H:%M")
+
+
 def _reward_delta_from_score(score: int) -> Dict[str, int]:
     views_gain = 0
     likes_gain = 0
@@ -402,6 +412,7 @@ def build_system_prompt(
     image_description: str = "",
     current_session_summary: str = "",
     time_diff_minutes: int = 0,
+    current_time_context: str = "",
 ) -> str:
     user_summary = ""
     if user_chronicle:
@@ -422,6 +433,7 @@ def build_system_prompt(
         if current_session_summary
         else f"\n\n【현재 진행 중인 행동/세션 요약】\n없음 (새로운 시작)\n(마지막 기록으로부터 {time_diff_minutes}분 경과)"
     )
+    time_context = f"\n\n【현재 시각】\n{current_time_context}" if current_time_context else ""
 
     return f"""너는 유튜브 브이로그 라이브의 따뜻한 시청자들이다.
 매번 6-10명의 시청자가 채팅으로 응원과 공감을 남긴다.
@@ -453,9 +465,10 @@ def build_system_prompt(
    - life_reason에는 왜 높거나 낮게 줬는지 위 기준으로 짧게 설명
 10. posts.author는 항상 "{OWNER_NAME}"으로 고정
 11. title은 챕터 제목처럼 6~12자 안쪽으로 짧고 깔끔하게 작성
-12. is_new_session은 아까 하던 행동의 연장이라면 false, 새로운 행동/주제/장소 전환이라면 true로 판단
-13. 마지막 기록으로부터 15분 이내라면 작은 화제 전환은 같은 세션으로 보는 쪽을 우선 고려
-14. 마지막 기록으로부터 120분을 넘겼다면 문맥과 무관하게 새 세션으로 보는 것이 자연스럽다{session_context}
+12. live_comments의 각 항목은 author/content/time을 모두 포함하고, time은 현재 시각 기준으로 짧게 적기
+13. is_new_session은 아까 하던 행동의 연장이라면 false, 새로운 행동/주제/장소 전환이라면 true로 판단
+14. 마지막 기록으로부터 15분 이내라면 작은 화제 전환은 같은 세션으로 보는 쪽을 우선 고려
+15. 마지막 기록으로부터 120분을 넘겼다면 문맥과 무관하게 새 세션으로 보는 것이 자연스럽다{time_context}{session_context}
 
 【응답 형식】
 {{
@@ -467,10 +480,10 @@ def build_system_prompt(
     }}
   ],
   "live_comments": [
-    {{"author": "민초단", "content": "오늘 루틴 너무 좋다"}},
-    {{"author": "소담", "content": "차분하게 잘 했네요"}},
-    {{"author": "밤비", "content": "이 분위기 좋아요"}},
-    {{"author": "하루루", "content": "내일도 같이 가요"}}
+    {{"author": "민초단", "content": "오늘 루틴 너무 좋다", "time": "13:42"}},
+    {{"author": "소담", "content": "차분하게 잘 했네요", "time": "13:43"}},
+    {{"author": "밤비", "content": "이 분위기 좋아요", "time": "13:44"}},
+    {{"author": "하루루", "content": "내일도 같이 가요", "time": "13:45"}}
   ],
   "life_score": 0,
   "life_reason": "왜 이 점수인지 한 줄 설명",
@@ -522,6 +535,8 @@ async def generate_gallery_posts(
 
     current_session_summary = ""
     time_diff_minutes = 0
+    current_time_context = _current_time_context()
+    current_time_label = _current_time_label()
     if saved_posts:
         last_event = saved_posts[0]
         current_session_summary = _compact_text(last_event.get("user_summary", "") or last_event.get("gallery_summary", ""), "", 48)
@@ -537,6 +552,7 @@ async def generate_gallery_posts(
         image_description=image_description,
         current_session_summary=current_session_summary,
         time_diff_minutes=time_diff_minutes,
+        current_time_context=current_time_context,
     )
 
     if image_data:
@@ -603,6 +619,7 @@ async def generate_gallery_posts(
                     {
                         "author": str(c.get("author", "익명")).strip() or "익명",
                         "content": str(c.get("content", "")).strip(),
+                        "time": str(c.get("time", current_time_label)).strip() or current_time_label,
                     }
                     for c in explicit_live_comments
                     if isinstance(c, dict) and str(c.get("content", "")).strip()
@@ -610,7 +627,19 @@ async def generate_gallery_posts(
             else:
                 live_comments = []
             if not live_comments:
-                live_comments = extracted_comments
+                live_comments = [
+                    {**comment, "time": current_time_label}
+                    for comment in extracted_comments
+                ]
+            else:
+                live_comments = [
+                    {
+                        "author": c["author"],
+                        "content": c["content"],
+                        "time": c.get("time", current_time_label),
+                    }
+                    for c in live_comments
+                ]
 
             user_chronicle.append({"content": user_summary, "time": _now_iso()})
             gallery_chronicle.append({"content": gallery_summary, "time": _now_iso()})
