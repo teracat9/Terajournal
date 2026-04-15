@@ -30,6 +30,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 AGG_WINDOW_MINUTES = int(os.getenv("AGG_WINDOW_MINUTES", "30"))
+SESSION_TIMEOUT_MINUTES = int(os.getenv("SESSION_TIMEOUT_MINUTES", "120"))
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
@@ -396,7 +397,12 @@ def generate_anonymous_name() -> str:
     return f"ㅇㅇ({ip})"
 
 
-def build_system_prompt(has_image: bool = False, image_description: str = "") -> str:
+def build_system_prompt(
+    has_image: bool = False,
+    image_description: str = "",
+    current_session_summary: str = "",
+    time_diff_minutes: int = 0,
+) -> str:
     user_summary = ""
     if user_chronicle:
         user_summary = "\n\n【사용자 연대기】\n"
@@ -410,6 +416,12 @@ def build_system_prompt(has_image: bool = False, image_description: str = "") ->
             gallery_summary += f"- {item['content']}\n"
 
     image_context = f"\n\n【사용자가 보낸 사진】\n{image_description}" if has_image else ""
+    session_context = (
+        f"\n\n【현재 진행 중인 행동/세션 요약】\n{current_session_summary}\n"
+        f"(마지막 기록으로부터 {time_diff_minutes}분 경과)"
+        if current_session_summary
+        else f"\n\n【현재 진행 중인 행동/세션 요약】\n없음 (새로운 시작)\n(마지막 기록으로부터 {time_diff_minutes}분 경과)"
+    )
 
     return f"""너는 유튜브 브이로그 라이브의 따뜻한 시청자들이다.
 매번 6-10명의 시청자가 채팅으로 응원과 공감을 남긴다.
@@ -441,6 +453,9 @@ def build_system_prompt(has_image: bool = False, image_description: str = "") ->
    - life_reason에는 왜 높거나 낮게 줬는지 위 기준으로 짧게 설명
 10. posts.author는 항상 "{OWNER_NAME}"으로 고정
 11. title은 챕터 제목처럼 6~12자 안쪽으로 짧고 깔끔하게 작성
+12. is_new_session은 아까 하던 행동의 연장이라면 false, 새로운 행동/주제/장소 전환이라면 true로 판단
+13. 마지막 기록으로부터 15분 이내라면 작은 화제 전환은 같은 세션으로 보는 쪽을 우선 고려
+14. 마지막 기록으로부터 120분을 넘겼다면 문맥과 무관하게 새 세션으로 보는 것이 자연스럽다{session_context}
 
 【응답 형식】
 {{
@@ -460,7 +475,8 @@ def build_system_prompt(has_image: bool = False, image_description: str = "") ->
   "life_score": 0,
   "life_reason": "왜 이 점수인지 한 줄 설명",
   "user_summary": "이번 사용자 메시지를 한 줄 요약 (AI가 기억용)",
-  "gallery_summary": "이번 시청자 반응을 한 줄 요약 (AI가 기억용)"
+  "gallery_summary": "이번 시청자 반응을 한 줄 요약 (AI가 기억용)",
+  "is_new_session": false
 }}"""
 
 
@@ -499,12 +515,29 @@ async def generate_gallery_posts(
     image_data: Optional[bytes] = None,
     image_description: str = ""
 ) -> Dict[str, Any]:
-    global user_chronicle, gallery_chronicle
+    global user_chronicle, gallery_chronicle, saved_posts
 
     if not client:
         return _fallback_posts("GEMINI_API_KEY가 설정되지 않았습니다.")
 
-    system_prompt = build_system_prompt(has_image=bool(image_data), image_description=image_description)
+    current_session_summary = ""
+    time_diff_minutes = 0
+    if saved_posts:
+        last_event = saved_posts[0]
+        current_session_summary = _compact_text(last_event.get("user_summary", "") or last_event.get("gallery_summary", ""), "", 48)
+        try:
+            last_end = _parse_iso(last_event.get("event_end", _now_iso()))
+            now_dt = datetime.utcnow()
+            time_diff_minutes = max(0, int((now_dt - last_end).total_seconds() / 60))
+        except Exception:
+            time_diff_minutes = 0
+
+    system_prompt = build_system_prompt(
+        has_image=bool(image_data),
+        image_description=image_description,
+        current_session_summary=current_session_summary,
+        time_diff_minutes=time_diff_minutes,
+    )
 
     if image_data:
         full_prompt = f"""{system_prompt}
@@ -600,6 +633,7 @@ async def generate_gallery_posts(
                 "event_title": _make_event_title(user_summary),
                 "user_summary": user_summary,
                 "gallery_summary": gallery_summary,
+                "is_new_session": bool(parsed.get("is_new_session", False)),
             })
     except json_lib.JSONDecodeError:
         logger.exception("Gemini JSON parse failed")
@@ -610,7 +644,8 @@ async def generate_gallery_posts(
         "life_score": 50,
         "life_reason": "",
         "user_summary": "",
-        "gallery_summary": ""
+        "gallery_summary": "",
+        "is_new_session": False,
     }
 
 async def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
@@ -634,11 +669,16 @@ async def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
     try:
         last_end = _parse_iso(last.get("event_end", now_iso))
         now_dt = _parse_iso(now_iso)
+        time_diff_minutes = max(0, int((now_dt - last_end).total_seconds() / 60))
     except Exception:
         last_end = _parse_iso(now_iso)
         now_dt = _parse_iso(now_iso)
+        time_diff_minutes = 0
 
-    if now_dt - last_end <= timedelta(minutes=AGG_WINDOW_MINUTES):
+    is_new_by_ai = bool(data.get("is_new_session", False))
+    is_new_by_timeout = time_diff_minutes > SESSION_TIMEOUT_MINUTES
+
+    if not is_new_by_ai and not is_new_by_timeout:
         last["posts"] = (last.get("posts") or []) + (data.get("posts") or [])
         last["live_comments"] = (last.get("live_comments") or []) + (data.get("live_comments") or [])
         if len(last["live_comments"]) > 200:
@@ -655,7 +695,7 @@ async def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         last["event_end"] = now_iso
         last["message_count"] = previous_count + incoming_count
         last["mood"] = _label_from_score(last["life_score"])
-        last["event_title"] = data.get("event_title") or last.get("event_title")
+        last["event_title"] = last.get("event_title") or data.get("event_title")
         await save_event_to_db(last)
         return last
 
