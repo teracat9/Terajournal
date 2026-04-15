@@ -46,6 +46,7 @@ bot_started = False
 saved_posts: List[Dict[str, Any]] = []
 user_chronicle: List[Dict[str, str]] = []
 gallery_chronicle: List[Dict[str, str]] = []
+OWNER_NAME = "김태림"
 
 def init_db():
     conn = sqlite3.connect(str(DB_PATH))
@@ -240,8 +241,8 @@ def _extract_posts_and_live_comments(raw_posts: Any) -> Tuple[List[Dict[str, Any
         if not isinstance(post, dict):
             continue
 
-        title = str(post.get("title", "무제")).strip() or "무제"
-        author = str(post.get("author", "익명")).strip() or "익명"
+        title = _make_event_title(str(post.get("title", "무제")).strip() or "무제")
+        author = OWNER_NAME
         content = str(post.get("content", "")).strip()
         cleaned_posts.append({
             "title": title,
@@ -262,10 +263,15 @@ def _extract_posts_and_live_comments(raw_posts: Any) -> Tuple[List[Dict[str, Any
     return cleaned_posts, live_comments
 
 def _make_event_title(summary: str) -> str:
-    base = (summary or "").strip()
+    base = (summary or "").strip().replace("\n", " ")
+    for ch in ['"', "'", "!", "?", ":", ";", "[", "]", "(", ")", "{", "}", "|"]:
+        base = base.replace(ch, "")
+    base = " ".join(base.split())
     if not base:
-        return "브이로그 세션"
-    return base[:24]
+        return "오늘의 기록"
+    if len(base) <= 12:
+        return base
+    return base[:12].rstrip() + "…"
 
 def generate_anonymous_name() -> str:
     ip = f"{random.randint(1,999)}.{random.randint(0,99)}"
@@ -315,13 +321,15 @@ def build_system_prompt(has_image: bool = False, image_description: str = "") ->
    - 공부/복습/과제/학습 루틴/대인관계 관리(가족, 친구, 선생님과의 건강한 소통)는 갓생 쪽(높은 점수)으로 본다
    - 단, 하루 전체 균형을 보고 최종 점수를 매긴다 (이분법 금지)
    - life_reason에는 왜 높거나 낮게 줬는지 위 기준으로 짧게 설명
+10. posts.author는 항상 "{OWNER_NAME}"으로 고정
+11. title은 메인 카드용이므로 6~12자 안쪽으로 짧고 깔끔하게 작성
 
 【응답 형식】
 {{
   "posts": [
     {{
-      "title": "짧고 산뜻한 제목",
-      "author": "닉네임",
+      "title": "6~12자 짧은 제목",
+      "author": "{OWNER_NAME}",
       "content": "브이로그 톤의 짧은 본문 (2-3줄)"
     }}
   ],
@@ -434,7 +442,7 @@ async def generate_gallery_posts(
             user_summary = parsed.get("user_summary", user_text[:50] if user_text else "사진 전송")
             cleaned_posts, extracted_comments = _extract_posts_and_live_comments(parsed.get("posts"))
             if not cleaned_posts:
-                cleaned_posts = [{"title": "무제", "author": "익명", "content": user_text[:120]}]
+                cleaned_posts = [{"title": _make_event_title("오늘의 기록"), "author": OWNER_NAME, "content": user_text[:120]}]
             gallery_summary = parsed.get("gallery_summary", str(cleaned_posts[0].get("content", ""))[:50])
             explicit_live_comments = parsed.get("live_comments", [])
             if isinstance(explicit_live_comments, list):
