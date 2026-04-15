@@ -13,10 +13,129 @@ const moneyCount = document.getElementById('moneyCount');
 const liveTitle = document.getElementById('liveTitle');
 const liveMeta = document.getElementById('liveMeta');
 const clipsList = document.getElementById('clipsList');
-const effectLayer = document.getElementById('effectLayer');
+const levelValue = document.getElementById('levelValue');
+const levelBar = document.getElementById('levelBar');
+const levelMeta = document.getElementById('levelMeta');
+const streakValue = document.getElementById('streakValue');
+const comboValue = document.getElementById('comboValue');
+const hypeMeta = document.getElementById('hypeMeta');
+const missionLog = document.getElementById('missionLog');
+const missionScore = document.getElementById('missionScore');
+const missionStreak = document.getElementById('missionStreak');
+const rewardTitle = document.getElementById('rewardTitle');
+const rewardMeta = document.getElementById('rewardMeta');
+const jackpotChance = document.getElementById('jackpotChance');
 
 const posts = [];
 const chatFeed = [];
+const CHANNEL_STATE_SAVE_DELAY = 1200;
+
+function createDefaultChannelState() {
+  return {
+    views: 0,
+    likes: 0,
+    dislikes: 0,
+    subs: 0,
+    money: 0,
+    xp: 0,
+    rewardedEventIds: [],
+    lastTickAt: Date.now(),
+  };
+}
+
+function sanitizeChannelState(rawState) {
+  const base = createDefaultChannelState();
+  const source = rawState && typeof rawState === 'object' ? rawState : {};
+  const toNonNegativeInt = (v, fallback = 0) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(0, Math.floor(n));
+  };
+  const rewarded = Array.isArray(source.rewardedEventIds)
+    ? source.rewardedEventIds.map((x) => String(x)).slice(-800)
+    : [];
+  return {
+    views: toNonNegativeInt(source.views, base.views),
+    likes: toNonNegativeInt(source.likes, base.likes),
+    dislikes: toNonNegativeInt(source.dislikes, base.dislikes),
+    subs: toNonNegativeInt(source.subs, base.subs),
+    money: toNonNegativeInt(source.money, base.money),
+    xp: toNonNegativeInt(source.xp, base.xp),
+    rewardedEventIds: rewarded,
+    lastTickAt: toNonNegativeInt(source.lastTickAt, base.lastTickAt),
+  };
+}
+
+const channelState = createDefaultChannelState();
+const rewardedEventIdSet = new Set();
+let saveTimer = null;
+let saveInFlight = false;
+let saveQueued = false;
+
+function snapshotChannelState() {
+  return {
+    ...channelState,
+    rewardedEventIds: [...rewardedEventIdSet].slice(-800),
+  };
+}
+
+async function saveChannelStateToServer() {
+  if (saveInFlight) {
+    saveQueued = true;
+    return;
+  }
+  saveInFlight = true;
+  try {
+    const payload = snapshotChannelState();
+    const res = await fetch('/channel-state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      const saved = sanitizeChannelState(await res.json());
+      Object.assign(channelState, saved);
+      rewardedEventIdSet.clear();
+      saved.rewardedEventIds.forEach((id) => rewardedEventIdSet.add(id));
+    }
+  } catch (err) {
+    console.error('Failed to save channel state', err);
+  } finally {
+    saveInFlight = false;
+    if (saveQueued) {
+      saveQueued = false;
+      saveChannelStateToServer();
+    }
+  }
+}
+
+function scheduleChannelStateSave(immediate = false) {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  if (immediate) {
+    saveChannelStateToServer();
+    return;
+  }
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveChannelStateToServer();
+  }, CHANNEL_STATE_SAVE_DELAY);
+}
+
+async function loadChannelStateFromServer() {
+  try {
+    const res = await fetch('/channel-state');
+    if (!res.ok) return;
+    const remote = sanitizeChannelState(await res.json());
+    Object.assign(channelState, remote);
+    rewardedEventIdSet.clear();
+    remote.rewardedEventIds.forEach((id) => rewardedEventIdSet.add(id));
+  } catch (err) {
+    console.error('Failed to load channel state', err);
+  }
+}
 function formatTime() {
   const now = new Date();
   return now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
@@ -41,27 +160,16 @@ function formatDayLabel(date) {
   return date.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
 }
 
-const GODLIFE_KEYWORDS = ['코딩', '운동', '독서', '공부', '작업', '개발', '루틴', '산책', '수영', '헬스', '스트레칭'];
-const LAZY_KEYWORDS = ['야식', '늦잠', '게임', '무기력', '눕', '멍', '침대', '넷플', '피곤'];
-
-function classifyPost(text) {
-  const content = (text || '').toLowerCase();
-  const isGod = GODLIFE_KEYWORDS.some((k) => content.includes(k));
-  const isLazy = LAZY_KEYWORDS.some((k) => content.includes(k));
-  if (isGod && !isLazy) return 'GODLIFE';
-  if (isLazy && !isGod) return 'LAZY';
-  return 'NEUTRAL';
+function normalizeLifeScore(score) {
+  const n = Number(score);
+  if (!Number.isFinite(n)) return 50;
+  return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-function extractTags(text) {
-  const tags = [];
-  GODLIFE_KEYWORDS.forEach((k) => {
-    if (text.includes(k)) tags.push(k);
-  });
-  LAZY_KEYWORDS.forEach((k) => {
-    if (text.includes(k)) tags.push(k);
-  });
-  return tags.slice(0, 3);
+function moodFromScore(score) {
+  if (score >= 70) return 'GODLIFE';
+  if (score <= 30) return 'LAZY';
+  return 'NEUTRAL';
 }
 
 function renderChat() {
@@ -84,26 +192,165 @@ function renderChat() {
   });
 }
 
-function getTotalMessages() {
-  return posts.reduce((sum, p) => sum + (p.messageCount || 0), 0);
+function parseDayKey(dayKey) {
+  const [y, m, d] = String(dayKey || '').split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(Date.UTC(y, m - 1, d));
+}
+
+function getStreakDays() {
+  const dayKeys = [...new Set(posts.map((p) => p.dayKey).filter(Boolean))]
+    .sort((a, b) => parseDayKey(b) - parseDayKey(a));
+  if (dayKeys.length === 0) return 0;
+
+  let streak = 1;
+  let cursor = parseDayKey(dayKeys[0]);
+  for (let i = 1; i < dayKeys.length; i += 1) {
+    const next = parseDayKey(dayKeys[i]);
+    if (!next) break;
+    const expected = new Date(cursor);
+    expected.setUTCDate(expected.getUTCDate() - 1);
+    if (next.getTime() === expected.getTime()) {
+      streak += 1;
+      cursor = next;
+    } else {
+      break;
+    }
+  }
+  return streak;
+}
+
+function clampPercent(value) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function getAverageLifeScore() {
+  if (posts.length === 0) return 50;
+  return Math.round(posts.reduce((sum, p) => sum + (p.lifeScore || 50), 0) / posts.length);
+}
+
+function getQualityFactor() {
+  const avgLifeScore = getAverageLifeScore();
+  const streak = getStreakDays();
+  return Math.max(0.25, Math.min(1.8, 0.3 + (avgLifeScore / 100) * 0.9 + streak * 0.06));
+}
+
+function applyPassiveGrowth() {
+  const now = Date.now();
+  const elapsedMs = now - (channelState.lastTickAt || now);
+  if (elapsedMs < 1000) return;
+
+  const elapsedHours = elapsedMs / (1000 * 60 * 60);
+  const qualityFactor = getQualityFactor();
+  const baseHourlyViews = 8 + Math.sqrt(Math.max(0, channelState.subs)) * 3 + posts.length * 0.8;
+  const passiveViews = Math.max(0, Math.floor(elapsedHours * baseHourlyViews * qualityFactor));
+
+  if (passiveViews > 0) {
+    const likeRate = 0.035 + qualityFactor * 0.02;
+    const dislikeRate = Math.max(0.003, 0.016 - qualityFactor * 0.006);
+    const subsRate = 0.0005 + qualityFactor * 0.0005;
+
+    channelState.views += passiveViews;
+    channelState.likes += Math.floor(passiveViews * likeRate);
+    channelState.dislikes += Math.floor(passiveViews * dislikeRate);
+    channelState.subs += Math.floor(passiveViews * subsRate);
+    channelState.money += Math.floor(passiveViews * (1.2 + qualityFactor * 1.4));
+    channelState.xp += Math.floor((passiveViews / 20) * Math.max(0.6, qualityFactor * 0.8));
+    scheduleChannelStateSave();
+  }
+
+  channelState.lastTickAt = now;
+}
+
+function applyContentReward(event, isNewEvent) {
+  if (!isNewEvent || !event?.id || rewardedEventIdSet.has(event.id)) return;
+
+  const score = normalizeLifeScore(event.lifeScore);
+  let viewsGain = 0;
+  let likesGain = 0;
+  let dislikesGain = 0;
+  let subsGain = 0;
+  let moneyGain = 0;
+  let xpGain = 0;
+
+  if (score >= 70) {
+    viewsGain = 60 + (score - 70) * 6;
+    likesGain = Math.floor(viewsGain * (0.08 + (score - 70) / 400));
+    dislikesGain = Math.floor(viewsGain * 0.004);
+    subsGain = Math.max(1, Math.floor((score - 65) / 10)) + (score >= 85 ? 2 : 0);
+    moneyGain = 1200 + score * 42;
+    xpGain = 30 + Math.floor((score - 65) * 1.5);
+  } else if (score <= 30) {
+    dislikesGain = 1 + Math.floor((30 - score) / 8);
+    xpGain = 3;
+  } else {
+    xpGain = 6 + Math.floor((score - 40) / 6);
+  }
+
+  channelState.views += viewsGain;
+  channelState.likes += likesGain;
+  channelState.dislikes += dislikesGain;
+  channelState.subs = Math.max(0, channelState.subs + subsGain);
+  channelState.money += moneyGain;
+  channelState.xp += Math.max(0, xpGain);
+  channelState.lastTickAt = Date.now();
+
+  rewardedEventIdSet.add(event.id);
+  scheduleChannelStateSave(true);
+}
+
+function updateGameSystems(metrics) {
+  const comments = metrics.comments;
+  const views = metrics.views;
+  const subs = metrics.subs;
+
+  const avgLifeScore = getAverageLifeScore();
+  const qualityPosts = posts.filter((p) => p.lifeScore >= 70).length;
+  const streak = getStreakDays();
+  const combo = (1 + (streak * 0.08) + ((avgLifeScore - 50) / 150));
+  const comboText = `x${combo.toFixed(1)}`;
+
+  const xp = Math.max(0, Math.floor(channelState.xp));
+  const level = Math.floor(xp / 120) + 1;
+  const currentLevelBase = (level - 1) * 120;
+  const currentXp = xp - currentLevelBase;
+  const nextXp = level * 120;
+  const levelProgress = clampPercent((currentXp / 120) * 100);
+
+  const hype = clampPercent((views / 1200) + ((avgLifeScore - 40) * 1.2) + (comments * 0.8) + (streak * 8));
+  const missionLogPct = clampPercent((qualityPosts / 5) * 100);
+  const missionScorePct = clampPercent((avgLifeScore / 70) * 100);
+  const missionStreakPct = clampPercent((streak / 3) * 100);
+
+  const rewardMilestones = [50, 100, 250, 500, 1000, 2500, 5000];
+  const nextMilestone = rewardMilestones.find((m) => subs < m) || (Math.ceil(subs / 5000) * 5000);
+  const remain = Math.max(0, nextMilestone - subs);
+  const jackpot = clampPercent((hype * 0.45) + (avgLifeScore * 0.15));
+
+  if (levelValue) levelValue.textContent = `Lv.${level}`;
+  if (levelMeta) levelMeta.textContent = `${currentXp.toLocaleString()} / ${nextXp.toLocaleString()} XP`;
+  if (levelBar) levelBar.style.width = `${levelProgress}%`;
+  if (streakValue) streakValue.textContent = streak.toLocaleString();
+  if (comboValue) comboValue.textContent = comboText;
+  if (hypeMeta) hypeMeta.textContent = `하이프 ${hype}%`;
+  if (missionLog) missionLog.textContent = `${missionLogPct}%`;
+  if (missionScore) missionScore.textContent = `${missionScorePct}%`;
+  if (missionStreak) missionStreak.textContent = `${missionStreakPct}%`;
+  if (rewardTitle) rewardTitle.textContent = remain === 0 ? '보상 달성 가능' : '신규 뱃지 해금';
+  if (rewardMeta) rewardMeta.textContent = `구독자 ${nextMilestone.toLocaleString()}명까지 ${remain.toLocaleString()}명 남음`;
+  if (jackpotChance) jackpotChance.textContent = `잭팟 확률 ${jackpot}%`;
 }
 
 function updateStats() {
-  const totalMessages = getTotalMessages();
-  const godlifeEvents = posts.filter((p) => p.mood === 'GODLIFE').length;
-  const views = totalMessages * 37 + godlifeEvents * 120;
-  const likes = Math.max(0, Math.floor(views * 0.08));
-  const dislikes = Math.max(0, Math.floor(views * 0.01));
+  applyPassiveGrowth();
+
+  const totalPosts = posts.length;
+  const views = Math.max(0, Math.floor(channelState.views));
+  const likes = Math.max(0, Math.floor(channelState.likes));
+  const dislikes = Math.max(0, Math.floor(channelState.dislikes));
   const comments = Math.max(0, chatFeed.length);
-
-  let subs = Math.floor(totalMessages / 4);
-  let money = totalMessages * 500 + godlifeEvents * 1500;
-
-  const viralEvents = posts.filter((p) => p.mood === 'GODLIFE' && p.messageCount >= 5);
-  if (viralEvents.length > 0) {
-    subs += viralEvents.length * 18;
-    money += viralEvents.length * 20000;
-  }
+  const subs = Math.max(0, Math.floor(channelState.subs));
+  const money = Math.max(0, Math.floor(channelState.money));
 
   if (viewCount) viewCount.textContent = views.toLocaleString();
   if (likeCount) likeCount.textContent = likes.toLocaleString();
@@ -113,46 +360,20 @@ function updateStats() {
   if (moneyCount) moneyCount.textContent = `₩${money.toLocaleString()}`;
 
   if (liveMeta) {
-    liveMeta.textContent = `업로드 ${totalMessages}개 · 시청 ${views.toLocaleString()}회`;
+    liveMeta.textContent = `업로드 ${totalPosts}개 · 시청 ${views.toLocaleString()}회`;
   }
 
   if (liveTitle) {
     const latest = posts[0];
     liveTitle.textContent = latest ? `${latest.dayLabel} 라이브 다시보기` : '산뜻한 브이로그 데이 로그';
   }
-}
-
-function triggerSoftEffects(intensity = 1, jackpot = false) {
-  if (!effectLayer) return;
-  document.body.classList.add('effect-glow');
-
-  const petalCount = jackpot ? 24 : 8 + intensity * 4;
-  const sparkleCount = jackpot ? 14 : 4 + intensity * 2;
-
-  const petals = Array.from({ length: petalCount }).map(() => {
-    const petal = document.createElement('div');
-    petal.className = 'petal';
-    petal.style.left = `${Math.random() * 100}%`;
-    petal.style.top = `${-10 - Math.random() * 30}px`;
-    petal.style.animationDelay = `${Math.random() * 0.4}s`;
-    return petal;
+  updateGameSystems({
+    views,
+    likes,
+    comments,
+    subs,
+    money,
   });
-
-  const sparkles = Array.from({ length: sparkleCount }).map(() => {
-    const sparkle = document.createElement('div');
-    sparkle.className = 'sparkle';
-    sparkle.style.left = `${10 + Math.random() * 80}%`;
-    sparkle.style.top = `${10 + Math.random() * 60}%`;
-    sparkle.style.animationDelay = `${Math.random() * 0.2}s`;
-    return sparkle;
-  });
-
-  [...petals, ...sparkles].forEach((node) => effectLayer.appendChild(node));
-
-  setTimeout(() => {
-    document.body.classList.remove('effect-glow');
-    [...petals, ...sparkles].forEach((node) => node.remove());
-  }, jackpot ? 2000 : 1600);
 }
 
 function renderList() {
@@ -182,8 +403,7 @@ function renderList() {
     }
 
     const chipClass = post.mood === 'GODLIFE' ? 'godlife' : post.mood === 'LAZY' ? 'lazy' : 'neutral';
-    const moodLabel = post.mood === 'GODLIFE' ? '갓생' : post.mood === 'LAZY' ? '나태' : '일상';
-    const chipTags = post.tags.map((tag) => `<span class="chip">${tag}</span>`).join('');
+    const moodLabel = post.mood === 'GODLIFE' ? '상승' : post.mood === 'LAZY' ? '하강' : '균형';
     card.innerHTML = `
       <div class="card-title">${post.title}</div>
       <div class="card-meta">
@@ -191,10 +411,10 @@ function renderList() {
         <span>${post.timeRange}</span>
       </div>
       <div class="card-chips">
-        <span class="chip ${chipClass}">${moodLabel}</span>
+        <span class="chip ${chipClass}">AI 생활지수 ${post.lifeScore}점 (${moodLabel})</span>
         <span class="chip">세션 ${post.messageCount}개</span>
+        ${post.lifeReason ? `<span class="chip">${post.lifeReason}</span>` : ''}
         ${post.isClip ? '<span class="chip godlife">레전드 클립</span>' : ''}
-        ${chipTags}
       </div>
       <div class="card-content">${post.preview}</div>
     `;
@@ -207,18 +427,16 @@ function renderList() {
 function openOverlay(post) {
   overlayTitle.textContent = post.title;
   overlayBody.innerHTML = `
-    <div class="post-body">
-      <h2>${post.title}</h2>
-      <p>${post.content}</p>
-    </div>
-    <div class="comments">
-      ${post.items.map((item) => `
-        <div class="comment">
-          <div class="author">${item.author || '익명'}</div>
-          <div class="content">${item.content || ''}</div>
+    ${post.items.map((item) => `
+      <div class="post-body">
+        <h2>${item.title || post.title}</h2>
+        <div class="card-meta">
+          <span>${item.author || '익명'}</span>
+          <span>${post.timeRange}</span>
         </div>
-      `).join('')}
-    </div>
+        <p>${item.content || ''}</p>
+      </div>
+    `).join('')}
   `;
   overlay.classList.add('open');
   history.pushState({ overlay: true }, '');
@@ -263,14 +481,14 @@ overlay.addEventListener('touchmove', (event) => {
 function rebuildChatFeed() {
   chatFeed.length = 0;
   posts.forEach((event) => {
-    event.items.forEach((item) => {
-      const comments = Array.isArray(item.comments) ? item.comments : [];
-      comments.slice(0, 2).forEach((c) => {
-        chatFeed.push({
-          author: c.author || '익명',
-          content: c.content || '',
-          time: event.time,
-        });
+    const source = Array.isArray(event.liveComments) && event.liveComments.length > 0
+      ? event.liveComments
+      : event.items.flatMap((item) => Array.isArray(item.comments) ? item.comments : []);
+    source.slice(-20).forEach((c) => {
+      chatFeed.push({
+        author: c.author || '익명',
+        content: c.content || '',
+        time: event.time,
       });
     });
   });
@@ -278,15 +496,15 @@ function rebuildChatFeed() {
   chatFeed.splice(30);
 }
 
-function addPosts(incoming) {
+function addPosts(incoming, options = {}) {
   if (!incoming || !Array.isArray(incoming.posts)) return;
+  const rewardEligible = options.rewardEligible !== false;
 
   const combinedText = incoming.posts.map((p) => p.content || '').join(' ');
-  const mood = incoming.mood || classifyPost(combinedText);
-  const tags = extractTags(combinedText);
+  const lifeScore = normalizeLifeScore(incoming.life_score);
+  const mood = incoming.mood || moodFromScore(lifeScore);
   const eventId = incoming.event_id || crypto.randomUUID();
   const existingIndex = posts.findIndex((p) => p.id === eventId);
-  const previousCount = existingIndex === -1 ? 0 : (posts[existingIndex].messageCount || 0);
 
   const title = incoming.event_title || incoming.posts[0]?.title || '무제';
   const author = incoming.posts[0]?.author || '익명';
@@ -296,20 +514,23 @@ function addPosts(incoming) {
   const eventStart = incoming.event_start ? new Date(incoming.event_start) : new Date();
   const dayKey = eventStart.toISOString().slice(0, 10);
   const dayLabel = formatDayLabel(eventStart);
-  const isClip = mood === 'GODLIFE' && messageCount >= 4;
+  const isClip = lifeScore >= 75 && messageCount >= 4;
 
   const event = {
     id: eventId,
     title,
     author,
     content: combinedText,
-    comments: incoming.posts.flatMap((p) => p.comments || []),
+    liveComments: Array.isArray(incoming.live_comments)
+      ? incoming.live_comments.filter((c) => c && c.content)
+      : [],
     preview,
     time: formatTime(),
     timeRange,
     isNew: existingIndex === -1,
     mood,
-    tags,
+    lifeScore,
+    lifeReason: incoming.life_reason || '',
     items: incoming.posts,
     messageCount,
     dayKey,
@@ -323,14 +544,12 @@ function addPosts(incoming) {
     posts[existingIndex] = event;
   }
 
+  applyContentReward(event, rewardEligible && existingIndex === -1);
   rebuildChatFeed();
   renderList();
   renderChat();
   updateStats();
   updateClips();
-  const intensity = mood === 'GODLIFE' ? 2 : mood === 'LAZY' ? 1 : 1;
-  const jackpot = mood === 'GODLIFE' && Math.random() < 0.1;
-  triggerSoftEffects(intensity, jackpot);
 }
 
 function updateClips() {
@@ -358,7 +577,7 @@ async function loadSavedPosts() {
     if (res.ok) {
       const savedPosts = await res.json();
       savedPosts.reverse().forEach((data) => {
-        addPosts(data);
+        addPosts(data, { rewardEligible: false });
       });
     }
   } catch (err) {
@@ -390,8 +609,18 @@ function connect() {
   };
 }
 
-loadSavedPosts();
-connect();
-updateStats();
-updateClips();
-renderChat();
+window.addEventListener('beforeunload', () => {
+  scheduleChannelStateSave(true);
+});
+
+async function initializeApp() {
+  await loadChannelStateFromServer();
+  await loadSavedPosts();
+  connect();
+  updateStats();
+  updateClips();
+  renderChat();
+  setInterval(updateStats, 30000);
+}
+
+initializeApp();

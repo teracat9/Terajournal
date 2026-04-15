@@ -7,7 +7,6 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="effect-layer" id="effectLayer"></div>
   <div class="yt-app">
     <header class="yt-header">
       <div class="yt-brand">
@@ -55,12 +54,56 @@
               <span class="value" id="moneyCount">₩0</span>
             </div>
           </div>
-          <div class="live-tags" id="liveTags">
-            <span class="tag">브이로그</span>
-            <span class="tag">라이브</span>
-            <span class="tag">갓생</span>
+        <div class="live-tags" id="liveTags">
+          <span class="tag">브이로그</span>
+          <span class="tag">라이브</span>
+          <span class="tag">AI 점수</span>
+        </div>
+      </div>
+
+      <div class="systems-panel">
+        <div class="systems-head">
+          <h2>성장 시스템</h2>
+          <p>생활지수가 높은 기록일수록 성장하고, 시간에 따라 자연 유입이 늘어납니다.</p>
+        </div>
+        <div class="systems-grid">
+          <div class="system-card">
+            <div class="system-label">크리에이터 레벨</div>
+            <div class="system-value" id="levelValue">Lv.1</div>
+            <div class="progress-track"><div class="progress-fill" id="levelBar"></div></div>
+            <div class="system-sub" id="levelMeta">0 / 120 XP</div>
+          </div>
+          <div class="system-card">
+            <div class="system-label">연속 기록</div>
+            <div class="system-value"><span id="streakValue">0</span>일</div>
+            <div class="system-sub">콤보 배수 <span id="comboValue">x1.0</span></div>
+            <div class="system-sub" id="hypeMeta">하이프 0%</div>
+          </div>
+          <div class="system-card">
+            <div class="system-label">오늘의 미션</div>
+            <div class="mission-list">
+              <div class="mission-row">
+                <span>고득점 로그 5개</span>
+                <span id="missionLog">0%</span>
+              </div>
+              <div class="mission-row">
+                <span>평균 생활지수 70+</span>
+                <span id="missionScore">0%</span>
+              </div>
+              <div class="mission-row">
+                <span>연속 기록 3일</span>
+                <span id="missionStreak">0%</span>
+              </div>
+            </div>
+          </div>
+          <div class="system-card">
+            <div class="system-label">다음 보상</div>
+            <div class="system-value" id="rewardTitle">신규 뱃지</div>
+            <div class="system-sub" id="rewardMeta">구독자 50명까지 50명 남음</div>
+            <div class="jackpot-pill" id="jackpotChance">잭팟 확률 0%</div>
           </div>
         </div>
+      </div>
 
         <div class="section-head">
           <h2>타임라인 챕터</h2>

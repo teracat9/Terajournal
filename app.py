@@ -9,7 +9,7 @@ import json as json_lib
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Any, Set, List, Optional
+from typing import Dict, Any, Set, List, Optional, Tuple
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -47,10 +47,6 @@ saved_posts: List[Dict[str, Any]] = []
 user_chronicle: List[Dict[str, str]] = []
 gallery_chronicle: List[Dict[str, str]] = []
 
-GODLIFE_KEYWORDS = ["코딩", "운동", "독서", "공부", "작업", "개발", "루틴", "산책", "수영", "헬스", "스트레칭"]
-LAZY_KEYWORDS = ["야식", "늦잠", "게임", "무기력", "눕", "멍", "침대", "넷플", "피곤"]
-
-
 def init_db():
     conn = sqlite3.connect(str(DB_PATH))
     c = conn.cursor()
@@ -71,6 +67,13 @@ def init_db():
             type TEXT,
             content TEXT,
             time TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS channel_state (
+            key TEXT PRIMARY KEY,
+            data TEXT,
+            updated_at TEXT
         )
     """)
     conn.commit()
@@ -105,6 +108,86 @@ def save_chronicle_to_db(chronicle_type: str, content: str, time_iso: str):
     conn.close()
 
 
+def _default_channel_state() -> Dict[str, Any]:
+    return {
+        "views": 0,
+        "likes": 0,
+        "dislikes": 0,
+        "subs": 0,
+        "money": 0,
+        "xp": 0,
+        "rewardedEventIds": [],
+        "lastTickAt": int(datetime.utcnow().timestamp() * 1000),
+    }
+
+
+def load_channel_state_from_db() -> Dict[str, Any]:
+    defaults = _default_channel_state()
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute("SELECT data FROM channel_state WHERE key = 'main' LIMIT 1")
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        return defaults
+
+    try:
+        parsed = json_lib.loads(row[0]) if row[0] else {}
+        if not isinstance(parsed, dict):
+            return defaults
+    except Exception:
+        return defaults
+
+    def _safe_int(v: Any, default: int = 0) -> int:
+        try:
+            return max(0, int(v))
+        except Exception:
+            return default
+
+    rewarded_raw = parsed.get("rewardedEventIds", [])
+    rewarded = [str(x) for x in rewarded_raw if isinstance(x, (str, int, float))]
+    rewarded = rewarded[-800:]
+
+    state = {
+        "views": _safe_int(parsed.get("views", defaults["views"])),
+        "likes": _safe_int(parsed.get("likes", defaults["likes"])),
+        "dislikes": _safe_int(parsed.get("dislikes", defaults["dislikes"])),
+        "subs": _safe_int(parsed.get("subs", defaults["subs"])),
+        "money": _safe_int(parsed.get("money", defaults["money"])),
+        "xp": _safe_int(parsed.get("xp", defaults["xp"])),
+        "rewardedEventIds": rewarded,
+        "lastTickAt": _safe_int(parsed.get("lastTickAt", defaults["lastTickAt"]), defaults["lastTickAt"]),
+    }
+    return state
+
+
+def save_channel_state_to_db(state: Dict[str, Any]) -> Dict[str, Any]:
+    current = load_channel_state_from_db()
+    merged = {**current, **(state or {})}
+
+    sanitized = {
+        "views": max(0, int(merged.get("views", 0))),
+        "likes": max(0, int(merged.get("likes", 0))),
+        "dislikes": max(0, int(merged.get("dislikes", 0))),
+        "subs": max(0, int(merged.get("subs", 0))),
+        "money": max(0, int(merged.get("money", 0))),
+        "xp": max(0, int(merged.get("xp", 0))),
+        "rewardedEventIds": [str(x) for x in merged.get("rewardedEventIds", []) if isinstance(x, (str, int, float))][-800:],
+        "lastTickAt": max(0, int(merged.get("lastTickAt", _default_channel_state()["lastTickAt"]))),
+    }
+
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute("""
+        INSERT OR REPLACE INTO channel_state (key, data, updated_at)
+        VALUES (?, ?, ?)
+    """, ("main", json_lib.dumps(sanitized, ensure_ascii=False), _now_iso()))
+    conn.commit()
+    conn.close()
+    return sanitized
+
+
 def load_all_from_db():
     global saved_posts, user_chronicle, gallery_chronicle
     
@@ -132,22 +215,51 @@ def _now_iso() -> str:
 def _parse_iso(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", ""))
 
-def _classify_text(text: str) -> str:
-    content = (text or "").lower()
-    is_god = any(keyword in content for keyword in GODLIFE_KEYWORDS)
-    is_lazy = any(keyword in content for keyword in LAZY_KEYWORDS)
-    if is_god and not is_lazy:
+def _clamp_life_score(value: Any, default: int = 50) -> int:
+    try:
+        score = int(round(float(value)))
+    except Exception:
+        return default
+    return max(0, min(100, score))
+
+def _label_from_score(score: int) -> str:
+    if score >= 70:
         return "GODLIFE"
-    if is_lazy and not is_god:
+    if score <= 30:
         return "LAZY"
     return "NEUTRAL"
 
-def _merge_mood(current: str, incoming: str) -> str:
-    if "GODLIFE" in (current, incoming):
-        return "GODLIFE"
-    if "LAZY" in (current, incoming):
-        return "LAZY"
-    return "NEUTRAL"
+def _extract_posts_and_live_comments(raw_posts: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+    cleaned_posts: List[Dict[str, Any]] = []
+    live_comments: List[Dict[str, str]] = []
+
+    if not isinstance(raw_posts, list):
+        return cleaned_posts, live_comments
+
+    for post in raw_posts:
+        if not isinstance(post, dict):
+            continue
+
+        title = str(post.get("title", "무제")).strip() or "무제"
+        author = str(post.get("author", "익명")).strip() or "익명"
+        content = str(post.get("content", "")).strip()
+        cleaned_posts.append({
+            "title": title,
+            "author": author,
+            "content": content,
+        })
+
+        comments = post.get("comments", [])
+        if isinstance(comments, list):
+            for comment in comments:
+                if not isinstance(comment, dict):
+                    continue
+                c_author = str(comment.get("author", "익명")).strip() or "익명"
+                c_content = str(comment.get("content", "")).strip()
+                if c_content:
+                    live_comments.append({"author": c_author, "content": c_content})
+
+    return cleaned_posts, live_comments
 
 def _make_event_title(summary: str) -> str:
     base = (summary or "").strip()
@@ -196,6 +308,13 @@ def build_system_prompt(has_image: bool = False, image_description: str = "") ->
 4. 절대 마크다운 사용 금지
 5. 본문은 짧고 담백하게
 6. 사진이 있으면 사진 내용을 구체적으로 언급하며 반응{user_summary}{gallery_summary}{image_context}
+7. 타임라인에는 게시글 본문만 들어가야 하므로, 댓글은 live_comments에만 넣기
+8. life_score는 키워드 매칭이 아닌 맥락 기반 AI 판단으로 0~100 정수로 산출
+9. 사용자는 한국 고3이다. 점수 기준은 다음 성향을 반영:
+   - 개발/코딩/프로젝트/딴짓성 활동은 기본적으로 망생 쪽(낮은 점수)으로 본다
+   - 공부/복습/과제/학습 루틴/대인관계 관리(가족, 친구, 선생님과의 건강한 소통)는 갓생 쪽(높은 점수)으로 본다
+   - 단, 하루 전체 균형을 보고 최종 점수를 매긴다 (이분법 금지)
+   - life_reason에는 왜 높거나 낮게 줬는지 위 기준으로 짧게 설명
 
 【응답 형식】
 {{
@@ -203,15 +322,17 @@ def build_system_prompt(has_image: bool = False, image_description: str = "") ->
     {{
       "title": "짧고 산뜻한 제목",
       "author": "닉네임",
-      "content": "브이로그 톤의 짧은 본문 (2-3줄)",
-      "comments": [
-        {{"author": "민초단", "content": "오늘 루틴 너무 좋다"}},
-        {{"author": "소담", "content": "차분하게 잘 했네요"}},
-        {{"author": "밤비", "content": "이 분위기 좋아요"}},
-        {{"author": "하루루", "content": "내일도 같이 가요"}}
-      ]
+      "content": "브이로그 톤의 짧은 본문 (2-3줄)"
     }}
   ],
+  "live_comments": [
+    {{"author": "민초단", "content": "오늘 루틴 너무 좋다"}},
+    {{"author": "소담", "content": "차분하게 잘 했네요"}},
+    {{"author": "밤비", "content": "이 분위기 좋아요"}},
+    {{"author": "하루루", "content": "내일도 같이 가요"}}
+  ],
+  "life_score": 0,
+  "life_reason": "왜 이 점수인지 한 줄 설명",
   "user_summary": "이번 사용자 메시지를 한 줄 요약 (AI가 기억용)",
   "gallery_summary": "이번 시청자 반응을 한 줄 요약 (AI가 기억용)"
 }}"""
@@ -238,7 +359,10 @@ def _build_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def _fallback_posts(message: str) -> Dict[str, Any]:
     return {
-        "posts": [{"title": "AI 대기중", "author": "시스템", "content": message, "comments": []}],
+        "posts": [{"title": "AI 대기중", "author": "시스템", "content": message}],
+        "live_comments": [],
+        "life_score": 50,
+        "life_reason": "",
         "user_summary": "",
         "gallery_summary": ""
     }
@@ -269,7 +393,7 @@ async def generate_gallery_posts(
 【사용자의 오늘 일기/메시지】
 {user_text}
 
-위의 글을 보고 갤러리 유저들이 실시간으로 싸우며 반응해줘."""
+위의 글을 보고 갤러리 유저들이 실시간으로 반응해줘."""
 
     def _call_model() -> str:
         if image_data:
@@ -308,7 +432,24 @@ async def generate_gallery_posts(
         parsed = json_lib.loads(raw)
         if isinstance(parsed, dict) and "posts" in parsed:
             user_summary = parsed.get("user_summary", user_text[:50] if user_text else "사진 전송")
-            gallery_summary = parsed.get("gallery_summary", str(parsed["posts"][0]["content"])[:50])
+            cleaned_posts, extracted_comments = _extract_posts_and_live_comments(parsed.get("posts"))
+            if not cleaned_posts:
+                cleaned_posts = [{"title": "무제", "author": "익명", "content": user_text[:120]}]
+            gallery_summary = parsed.get("gallery_summary", str(cleaned_posts[0].get("content", ""))[:50])
+            explicit_live_comments = parsed.get("live_comments", [])
+            if isinstance(explicit_live_comments, list):
+                live_comments = [
+                    {
+                        "author": str(c.get("author", "익명")).strip() or "익명",
+                        "content": str(c.get("content", "")).strip(),
+                    }
+                    for c in explicit_live_comments
+                    if isinstance(c, dict) and str(c.get("content", "")).strip()
+                ]
+            else:
+                live_comments = []
+            if not live_comments:
+                live_comments = extracted_comments
 
             user_chronicle.append({"content": user_summary, "time": _now_iso()})
             gallery_chronicle.append({"content": gallery_summary, "time": _now_iso()})
@@ -321,15 +462,25 @@ async def generate_gallery_posts(
             if len(gallery_chronicle) > 50:
                 gallery_chronicle = gallery_chronicle[-50:]
 
-            mood = _classify_text(user_text) if user_text else "NEUTRAL"
-            parsed["mood"] = mood
-            parsed["event_title"] = _make_event_title(user_summary)
-            return parsed
+            life_score = _clamp_life_score(parsed.get("life_score"), 50)
+            return {
+                "posts": cleaned_posts,
+                "live_comments": live_comments,
+                "life_score": life_score,
+                "life_reason": str(parsed.get("life_reason", "")).strip(),
+                "mood": _label_from_score(life_score),
+                "event_title": _make_event_title(user_summary),
+                "user_summary": user_summary,
+                "gallery_summary": gallery_summary,
+            }
     except json_lib.JSONDecodeError:
         logger.exception("Gemini JSON parse failed")
 
     return {
-        "posts": [{"title": "파싱 실패", "author": "시스템", "content": raw[:500], "comments": []}],
+        "posts": [{"title": "파싱 실패", "author": "시스템", "content": raw[:500]}],
+        "live_comments": [],
+        "life_score": 50,
+        "life_reason": "",
         "user_summary": "",
         "gallery_summary": ""
     }
@@ -342,6 +493,8 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
             "event_start": now_iso,
             "event_end": now_iso,
             "message_count": 1,
+            "life_score": _clamp_life_score(data.get("life_score"), 50),
+            "life_reason": data.get("life_reason", ""),
             "mood": data.get("mood", "NEUTRAL"),
             "event_title": data.get("event_title") or _make_event_title(data.get("user_summary", "")),
             **data,
@@ -359,11 +512,21 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
 
     if now_dt - last_end <= timedelta(minutes=AGG_WINDOW_MINUTES):
         last["posts"] = (last.get("posts") or []) + (data.get("posts") or [])
+        last["live_comments"] = (last.get("live_comments") or []) + (data.get("live_comments") or [])
+        if len(last["live_comments"]) > 200:
+            last["live_comments"] = last["live_comments"][-200:]
         last["user_summary"] = data.get("user_summary", last.get("user_summary", ""))
         last["gallery_summary"] = data.get("gallery_summary", last.get("gallery_summary", ""))
+        previous_count = int(last.get("message_count", 1))
+        incoming_count = max(1, int(data.get("message_count", len(data.get("posts") or []) or 1)))
+        current_score = _clamp_life_score(last.get("life_score"), 50)
+        incoming_score = _clamp_life_score(data.get("life_score"), 50)
+        merged_score = round(((current_score * previous_count) + (incoming_score * incoming_count)) / (previous_count + incoming_count))
+        last["life_score"] = _clamp_life_score(merged_score, 50)
+        last["life_reason"] = data.get("life_reason", last.get("life_reason", ""))
         last["event_end"] = now_iso
-        last["message_count"] = int(last.get("message_count", 1)) + 1
-        last["mood"] = _merge_mood(last.get("mood", "NEUTRAL"), data.get("mood", "NEUTRAL"))
+        last["message_count"] = previous_count + incoming_count
+        last["mood"] = _label_from_score(last["life_score"])
         last["event_title"] = data.get("event_title") or last.get("event_title")
         save_event_to_db(last)
         return last
@@ -374,6 +537,8 @@ def _upsert_event(data: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
         "event_start": now_iso,
         "event_end": now_iso,
         "message_count": 1,
+        "life_score": _clamp_life_score(data.get("life_score"), 50),
+        "life_reason": data.get("life_reason", ""),
         "mood": data.get("mood", "NEUTRAL"),
         "event_title": data.get("event_title") or _make_event_title(data.get("user_summary", "")),
         **data,
@@ -505,6 +670,16 @@ async def get_posts() -> List[Dict[str, Any]]:
 @app.get("/chronicles")
 async def get_chronicles() -> Dict[str, List[Dict[str, str]]]:
     return {"user": user_chronicle, "gallery": gallery_chronicle}
+
+
+@app.get("/channel-state")
+async def get_channel_state() -> Dict[str, Any]:
+    return load_channel_state_from_db()
+
+
+@app.post("/channel-state")
+async def set_channel_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    return save_channel_state_to_db(state)
 
 
 @app.post("/clear-posts")
